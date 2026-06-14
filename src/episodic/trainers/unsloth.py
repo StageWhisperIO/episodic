@@ -1,7 +1,11 @@
 from . import register, TrainerUnavailable
 from .trl import _read_rows, _training_kwargs
 
-HINT = "Unsloth backend needs extras: pip install 'episodic[unsloth]' (unsloth, trl, torch — CUDA GPU required)"
+HINT = (
+    "Unsloth backend needs extras: pip install 'episodic[unsloth]'. "
+    "Unsloth Core runs on an NVIDIA (CUDA 7.0+), AMD, or Intel GPU on Linux/Windows; "
+    "Apple Silicon is not yet supported."
+)
 DEFAULT_MODEL = "unsloth/SmolLM2-135M-Instruct"
 DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 

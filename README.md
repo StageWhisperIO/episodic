@@ -44,7 +44,7 @@ The base install is **stdlib-only** (fast hooks, no heavy deps). Optional extras
 pip install -e ".[datasets]"   # pyarrow + datasets  → real Parquet export
 pip install -e ".[rl]"         # numpy               → reward-model fit
 pip install -e ".[trl]"        # torch + trl         → SFT / DPO fine-tuning
-pip install -e ".[unsloth]"    # unsloth (CUDA GPU)  → fast 4-bit LoRA SFT / DPO
+pip install -e ".[unsloth]"    # unsloth (NVIDIA/AMD/Intel GPU, Linux/Windows) → fast 4-bit LoRA
 ```
 
 ### 2. Add the Claude Code plugin
@@ -79,8 +79,9 @@ Everything is also available directly: `episodic summary`, `episodic list`,
 
 Datasets are JSONL, so training is just another filter on the pipe. Backends are
 interchangeable — **TRL** (default, runs on a MacBook via MPS), **Unsloth** (`unsloth-sft` /
-`unsloth-dpo`, fast 4-bit LoRA on a CUDA GPU), the `command` trainer that shells out to any
-executable, or your own via an `episodic.trainers` entry point.
+`unsloth-dpo`, fast 4-bit LoRA on an NVIDIA/AMD/Intel GPU under Linux/Windows — Apple Silicon
+not yet), the `command` trainer that shells out to any executable, or your own via an
+`episodic.trainers` entry point.
 
 ```bash
 episodic train --list                                          # show backends
