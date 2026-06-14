@@ -139,6 +139,36 @@ def test_run_replay_local_repo_fallback_copies_root(tmp_path, monkeypatch, sampl
     assert result["workspace"] == str(workspace)
 
 
+def test_run_replay_local_repo_diff_scoring(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    local = tmp_path / "localrepo2"
+    local.mkdir()
+    (local / ".git").mkdir()
+    (local / "mod.py").write_text("x = 1\n")
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        "import os, sys\n"
+        "workspace = sys.argv[2]\n"
+        "with open(os.path.join(workspace, 'mod.py'), 'a') as fh:\n"
+        "    fh.write('y = 2\\n')\n"
+    )
+    sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(local)
+    sample_episode["commands"] = []
+    sample_episode["diffs"] = [{"file": "mod.py", "status": "modified",
+                               "additions": 1, "deletions": 0, "unified": None}]
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+
+    result = run_replay(replay_id, "candidate", execute=True,
+                        runner_cmd=f"python3 {runner} {{model}} {{workspace}} {{prompt_file}}")
+
+    assert result["ran"] is True
+    assert "mod.py" in result["produced_files"]
+    assert result["scores"]["diff_overlap"] == 1.0
+
+
 def test_run_replay_local_fallback_refuses_non_git_dir(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)

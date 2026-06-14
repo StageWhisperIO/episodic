@@ -153,6 +153,14 @@ def _reset_workspace(workspace, replays_root):
     return True, None
 
 
+def _init_git_baseline(workspace):
+    _run_cmd(["git", "-C", str(workspace), "init", "-q"], timeout=30)
+    _run_cmd(["git", "-C", str(workspace), "add", "-A"], timeout=30)
+    _run_cmd(["git", "-C", str(workspace),
+              "-c", "user.email=replay@episodic.local", "-c", "user.name=episodic",
+              "commit", "-q", "-m", "replay base"], timeout=30)
+
+
 def _jaccard(set_a, set_b):
     if not set_a and not set_b:
         return 1.0
@@ -223,6 +231,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
                     ignore=shutil.ignore_patterns(".git", ".episodic", "node_modules"),
                     symlinks=True,
                 )
+                _init_git_baseline(workspace)
                 workspace_created = True
             except Exception:
                 pass
