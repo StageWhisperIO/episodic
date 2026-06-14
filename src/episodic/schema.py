@@ -132,6 +132,7 @@ def new_episode(id, agent="claude-code", intent="", repo_state=None, created_at=
         "reward_vector": default_reward(),
         "stats": default_stats(),
         "labels": [],
+        "diff_source": "unknown",
     }
 
 
@@ -283,6 +284,7 @@ EPISODE_SCHEMA = {
         },
         "stats": {"type": "object"},
         "labels": {"type": "array", "items": {"type": "string"}},
+        "diff_source": {"type": "string"},
     },
 }
 

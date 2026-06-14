@@ -75,6 +75,7 @@ def map_rows(rows):
     session_meta = next((_payload(r) for r in rows if r.get("type") == "session_meta"), {})
     session_id = session_meta.get("id") or "codex-session"
     cwd = session_meta.get("cwd") or os.getcwd()
+    git = session_meta.get("git") or {}
     outputs = _outputs_by_call(rows)
 
     payloads = []
@@ -92,6 +93,7 @@ def map_rows(rows):
             name = payload.get("name", "")
             args = _parse_arguments(payload.get("arguments"))
             call_id = payload.get("call_id")
+            workdir = args.get("workdir") or args.get("cwd") or cwd
             if name in SHELL_FUNCTIONS:
                 command = _command_from_arguments(args)
                 body, exit_code = _parse_output(outputs.get(call_id))
@@ -100,14 +102,16 @@ def map_rows(rows):
                     "tool_name": "Bash",
                     "tool_input": {"command": command},
                     "tool_response": {"stdout": body, "exit_code": exit_code},
+                    "cwd": workdir,
                 })
             elif name in PATCH_FUNCTIONS:
-                for path in _patch_paths(args, payload.get("arguments"), cwd):
+                for path in _patch_paths(args, payload.get("arguments"), workdir):
                     payloads.append({
                         "hook_event_name": "PostToolUse",
                         "tool_name": "Edit",
                         "tool_input": {"file_path": path},
                         "tool_response": {"stdout": "applied"},
+                        "cwd": workdir,
                     })
 
         elif kind == "token_count":
@@ -119,7 +123,7 @@ def map_rows(rows):
                     "cost_usd": 0.0,
                 }
 
-    return session_id, cwd, payloads, usage
+    return session_id, cwd, payloads, usage, git
 
 
 def import_rollout(path, session_id=None, cwd=None):
@@ -134,21 +138,28 @@ def import_rollout(path, session_id=None, cwd=None):
             except json.JSONDecodeError:
                 continue
 
-    rollout_session, rollout_cwd, payloads, usage = map_rows(rows)
+    rollout_session, rollout_cwd, payloads, usage, git = map_rows(rows)
     session_id = session_id or rollout_session
     cwd = cwd or rollout_cwd
 
     ingest({"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd, "source": "exec"})
     for payload in payloads:
         payload["session_id"] = session_id
-        payload["cwd"] = cwd
+        payload.setdefault("cwd", cwd)
         ingest(payload)
 
+    from episodic import store
+    meta = store.read_meta(session_id, cwd)
+    repo_state = meta.get("repo_state") or {}
+    if git.get("commit_hash"):
+        repo_state["base_commit"] = git["commit_hash"]
+    if git.get("branch"):
+        repo_state["branch"] = git["branch"]
+    if repo_state:
+        meta["repo_state"] = repo_state
     if usage:
-        from episodic import store
-        meta = store.read_meta(session_id, cwd)
         meta["usage"] = usage
-        store.write_meta(session_id, meta, cwd)
+    store.write_meta(session_id, meta, cwd)
 
     ingest({"hook_event_name": "SessionEnd", "session_id": session_id, "cwd": cwd, "reason": "exec"})
     return len(payloads)

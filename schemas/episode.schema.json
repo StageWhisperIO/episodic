@@ -385,6 +385,9 @@
       "items": {
         "type": "string"
       }
+    },
+    "diff_source": {
+      "type": "string"
     }
   }
 }

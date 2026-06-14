@@ -96,13 +96,18 @@ def parse_output(output):
     return None
 
 
-def detect_test_run(command, output, ts):
+def detect_test_run(command, output, ts, exit_code=None):
     framework = classify_command(command or "")
     if framework is None:
         return None
     counts = parse_output(output or "") or {"passed": 0, "failed": 0, "skipped": 0}
     total = counts["passed"] + counts["failed"] + counts["skipped"]
-    ok = counts["failed"] == 0 and (total > 0 or "fail" not in (output or "").lower())
+    if exit_code is not None and exit_code != 0:
+        ok = False
+    elif total > 0 and counts["failed"] == 0:
+        ok = True
+    else:
+        ok = False
     return {
         "ts": ts,
         "framework": framework,

@@ -104,7 +104,7 @@ def _build_tests(events):
             continue
         data = event["data"]
         detected = testdetect.detect_test_run(
-            data.get("command", ""), data.get("response", ""), event["ts"]
+            data.get("command", ""), data.get("response", ""), event["ts"], data.get("exit_code")
         )
         if detected:
             tests.append(detected)
@@ -120,13 +120,7 @@ def _relativize(path, base):
     return path
 
 
-def _build_diffs(repo_state, cwd, events):
-    base_commit = repo_state.get("base_commit")
-    if repo_state.get("root") and gitinfo.git_available(repo_state["root"]):
-        patch = gitinfo.working_diff(repo_state["root"], base_commit)
-        parsed = diffparse.parse_unified_diff(patch)
-        if parsed:
-            return parsed
+def _event_diffs(repo_state, cwd, events):
     base = repo_state.get("root") or cwd
     touched = {}
     for event in events:
@@ -139,6 +133,19 @@ def _build_diffs(repo_state, cwd, events):
         {"file": path, "status": status, "additions": 0, "deletions": 0, "unified": None}
         for path, status in sorted(touched.items())
     ]
+
+
+def _build_diffs(repo_state, cwd, events):
+    root = repo_state.get("root")
+    base_commit = repo_state.get("base_commit")
+    if root and base_commit and gitinfo.git_available(root):
+        if gitinfo.head_commit(root) == base_commit:
+            parsed = diffparse.parse_unified_diff(gitinfo.working_diff(root, base_commit))
+            if parsed:
+                return parsed, "git-working-tree"
+            return _event_diffs(repo_state, cwd, events), "events"
+        return _event_diffs(repo_state, cwd, events), "events-untrusted"
+    return _event_diffs(repo_state, cwd, events), "events"
 
 
 def _build_stats(events, meta):
@@ -215,7 +222,7 @@ def build_episode(session):
     episode["steps"] = _build_steps(events)
     episode["commands"] = _build_commands(events)
     episode["tests"] = _build_tests(events)
-    episode["diffs"] = _build_diffs(repo_state, cwd, events)
+    episode["diffs"], episode["diff_source"] = _build_diffs(repo_state, cwd, events)
     episode["human_feedback"] = meta.get("human_feedback", [])
     episode["outcome"] = meta.get("outcome") or episode["outcome"]
     episode["stats"] = _build_stats(events, meta)

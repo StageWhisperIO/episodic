@@ -8,13 +8,14 @@ import notify
 
 
 ROLLOUT_ROWS = [
-    {"type": "session_meta", "payload": {"id": "sess-abc", "cwd": "/repo", "cli_version": "0.135.0"}},
+    {"type": "session_meta", "payload": {"id": "sess-abc", "cwd": "/repo", "cli_version": "0.135.0",
+                                          "git": {"commit_hash": "abc123", "branch": "master"}}},
     {"type": "turn_context", "payload": {"type": "turn_context"}},
     {"type": "event_msg", "payload": {"type": "user_message", "message": "Create foo.py and run pytest"}},
     {"type": "response_item", "payload": {
         "type": "function_call",
         "name": "exec_command",
-        "arguments": "{\"cmd\": \"python3 -m pytest -q\", \"workdir\": \"/repo\"}",
+        "arguments": "{\"cmd\": \"python3 -m pytest -q\", \"workdir\": \"/repo/sub\"}",
         "call_id": "c1",
     }},
     {"type": "response_item", "payload": {
@@ -36,9 +37,10 @@ ROLLOUT_ROWS = [
 
 
 def test_map_rows():
-    session_id, cwd, payloads, usage = import_rollout.map_rows(ROLLOUT_ROWS)
+    session_id, cwd, payloads, usage, git = import_rollout.map_rows(ROLLOUT_ROWS)
     assert session_id == "sess-abc"
     assert cwd == "/repo"
+    assert git["commit_hash"] == "abc123"
 
     prompts = [p for p in payloads if p["hook_event_name"] == "UserPromptSubmit"]
     assert len(prompts) == 1 and "foo.py" in prompts[0]["prompt"]
@@ -48,6 +50,7 @@ def test_map_rows():
     assert bash[0]["tool_input"]["command"] == "python3 -m pytest -q"
     assert bash[0]["tool_response"]["exit_code"] == 0
     assert "2 passed" in bash[0]["tool_response"]["stdout"]
+    assert bash[0]["cwd"] == "/repo/sub"
 
     edits = [p for p in payloads if p.get("tool_name") == "Edit"]
     assert len(edits) == 1 and edits[0]["tool_input"]["file_path"].endswith("src/new.py")
