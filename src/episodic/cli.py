@@ -196,6 +196,57 @@ def cmd_schema(args):
     return 0
 
 
+def cmd_train(args):
+    from . import trainers
+
+    if args.list:
+        for name in trainers.available():
+            trainer = trainers.get(name)
+            print(f"{name:<12} consumes={','.join(trainer.consumes)}")
+        return 0
+
+    dataset = _materialize_dataset(args.dataset)
+    config = _load_train_config(args.config)
+    if args.model:
+        config.setdefault("model", args.model)
+    out = args.out or str(paths.exports_dir() / f"train-{args.trainer}")
+
+    try:
+        manifest = trainers.train(args.trainer, dataset, out, config)
+    except trainers.TrainerUnavailable as exc:
+        print(f"episodic: {exc.hint}", file=sys.stderr)
+        print(f"dataset is ready at: {dataset}")
+        print("install the backend, swap --trainer command, or hand the dataset to any trainer.")
+        return 0
+    _print_json(manifest)
+    return 0
+
+
+def _materialize_dataset(arg):
+    if arg and arg != "-":
+        return arg
+    import tempfile
+
+    data = sys.stdin.read()
+    handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+    handle.write(data)
+    handle.close()
+    return handle.name
+
+
+def _load_train_config(arg):
+    if not arg:
+        return {}
+    from pathlib import Path
+
+    candidate = Path(arg)
+    text = candidate.read_text(encoding="utf-8") if candidate.exists() else arg
+    try:
+        return json.loads(text)
+    except ValueError:
+        _fail(f"--config is neither a JSON file nor inline JSON: {arg}")
+
+
 def cmd_dashboard(args):
     from .dashboard.server import serve
 
@@ -271,6 +322,15 @@ def build_parser():
     schema = sub.add_parser("schema", help="print or dump the CodingEpisode JSON Schema")
     schema.add_argument("schema_command", nargs="?", default="print", choices=["print", "dump"])
     schema.set_defaults(func=cmd_schema)
+
+    train = sub.add_parser("train", help="train a model on an exported dataset (pluggable backend)")
+    train.add_argument("dataset", nargs="?", default="-")
+    train.add_argument("--trainer", default="trl-sft")
+    train.add_argument("--config")
+    train.add_argument("--model")
+    train.add_argument("--out")
+    train.add_argument("--list", action="store_true")
+    train.set_defaults(func=cmd_train)
 
     dashboard = sub.add_parser("dashboard", help="serve the local episode dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")
