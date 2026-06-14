@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 from ..schema import new_episode, default_stats
@@ -110,6 +111,15 @@ def _build_tests(events):
     return tests
 
 
+def _relativize(path, base):
+    if base and path and path.startswith(base):
+        try:
+            return os.path.relpath(path, base)
+        except ValueError:
+            return path
+    return path
+
+
 def _build_diffs(repo_state, cwd, events):
     base_commit = repo_state.get("base_commit")
     if repo_state.get("root") and gitinfo.git_available(repo_state["root"]):
@@ -117,13 +127,14 @@ def _build_diffs(repo_state, cwd, events):
         parsed = diffparse.parse_unified_diff(patch)
         if parsed:
             return parsed
+    base = repo_state.get("root") or cwd
     touched = {}
     for event in events:
         if event["type"] in ("file_edit", "file_write"):
             path = event["data"].get("file_path")
             if path:
                 status = "added" if event["type"] == "file_write" else "modified"
-                touched[path] = status
+                touched[_relativize(path, base)] = status
     return [
         {"file": path, "status": status, "additions": 0, "deletions": 0, "unified": None}
         for path, status in sorted(touched.items())

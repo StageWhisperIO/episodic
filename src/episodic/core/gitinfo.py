@@ -18,6 +18,22 @@ def _run(args, cwd):
     return result.stdout.strip()
 
 
+def _run_diff(args, cwd):
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode not in (0, 1):
+        return None
+    return result.stdout
+
+
 def git_available(cwd):
     return _run(["git", "rev-parse", "--is-inside-work-tree"], cwd) == "true"
 
@@ -48,12 +64,25 @@ def repo_state(cwd):
     return state
 
 
+def _untracked_diff(cwd):
+    listing = _run(["git", "ls-files", "--others", "--exclude-standard"], cwd)
+    if not listing:
+        return ""
+    patches = []
+    for path in listing.splitlines():
+        patch = _run_diff(["git", "diff", "--no-index", "--no-color", "/dev/null", path], cwd)
+        if patch and patch.strip():
+            patches.append(patch)
+    return "\n".join(patches)
+
+
 def working_diff(cwd, base_commit=None):
-    if base_commit:
-        diff = _run(["git", "diff", base_commit, "--no-color"], cwd)
-        if diff is not None:
-            return diff
-    return _run(["git", "diff", "HEAD", "--no-color"], cwd) or ""
+    target = base_commit or "HEAD"
+    tracked = _run_diff(["git", "diff", target, "--no-color"], cwd)
+    if tracked is None:
+        tracked = _run_diff(["git", "diff", "HEAD", "--no-color"], cwd) or ""
+    untracked = _untracked_diff(cwd)
+    return "\n".join(part for part in (tracked, untracked) if part and part.strip())
 
 
 def head_commit(cwd):
