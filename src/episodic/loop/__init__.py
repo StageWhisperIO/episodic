@@ -16,7 +16,7 @@ def _composite(episode):
 
 def _hash_frac(episode_id, seed):
     digest = hashlib.sha256(f"{seed}:{episode_id}".encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) / 0xFFFFFFFF
+    return int(digest[:8], 16) / 0x100000000
 
 
 def select_good(episodes, min_composite):
@@ -87,7 +87,7 @@ def run_loop(config, start=None):
     min_composite = _number(config, "min_composite", 0.5)
     holdout_frac = _number(config, "holdout_frac", 0.2, low=0.0, high=1.0)
     seed = config.get("seed", 0)
-    margin = _number(config, "promote_margin", 0.0)
+    margin = _number(config, "promote_margin", 0.0, low=0.0)
     concurrency = _number(config, "eval_concurrency", 4, low=1, integer=True)
     max_holdout = _number(config, "max_holdout", 50, low=0, integer=True)
     base_model = config.get("base_model", "base")

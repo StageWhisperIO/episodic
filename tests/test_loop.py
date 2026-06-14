@@ -70,7 +70,8 @@ def test_partition_is_order_independent():
 def test_run_loop_rejects_bad_config(tmp_path, monkeypatch):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
     for key, value in [("holdout_frac", 1.5), ("max_holdout", -1),
-                       ("eval_concurrency", 0), ("promote_margin", "nope")]:
+                       ("eval_concurrency", 0), ("promote_margin", "nope"),
+                       ("promote_margin", -0.1)]:
         with pytest.raises(ValueError):
             loop.run_loop({"trainer": "command", "format": "sft", key: value,
                            "train_config": {"command": "true"}, "out": str(tmp_path / "o")})
