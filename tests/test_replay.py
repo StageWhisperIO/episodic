@@ -75,6 +75,7 @@ def test_run_replay_execute_dry_run_without_remote(tmp_path, monkeypatch, sample
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
     sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(tmp_path / "no-such-root")
     manifest = create_replay(sample_episode)
     replay_id = manifest["replay_id"]
 
@@ -99,6 +100,42 @@ def test_run_replay_rejects_path_traversal(tmp_path, monkeypatch):
     assert isinstance(result, dict)
     assert "error" in result
     assert "escapes" in result["error"]
+
+
+def test_run_replay_refuses_symlinked_workspace(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+    replay_dir = tmp_path / "replays" / replay_id
+
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("important")
+    (replay_dir / "workspace").symlink_to(external)
+
+    result = run_replay(replay_id, "test-model", execute=True)
+
+    assert "error" in result
+    assert (external / "keep.txt").exists()
+
+
+def test_run_replay_local_repo_fallback_copies_root(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    local = tmp_path / "localrepo"
+    local.mkdir()
+    (local / "mod.py").write_text("x = 1\n")
+    sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(local)
+    sample_episode["commands"] = []
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+
+    result = run_replay(replay_id, "test-model", execute=True)
+
+    workspace = tmp_path / "replays" / replay_id / "workspace"
+    assert (workspace / "mod.py").exists()
+    assert result["workspace"] == str(workspace)
 
 
 def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sample_episode):

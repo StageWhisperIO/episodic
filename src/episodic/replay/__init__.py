@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -89,6 +90,7 @@ def create_replay(episode, start=None):
         "base_commit": repo_state.get("base_commit"),
         "remote_url": repo_state.get("remote_url"),
         "repo": repo_state.get("repo"),
+        "repo_root": repo_root,
         "branch": repo_state.get("branch"),
         "initial_prompt": episode.get("intent", ""),
         "test_command": test_command,
@@ -128,6 +130,27 @@ def _run_cmd(args, cwd=None, timeout=60, shell=False):
         return result.stdout + result.stderr, result.returncode
     except Exception:
         return "", -1
+
+
+def _within(path, root):
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    try:
+        return os.path.commonpath([str(resolved), str(root)]) == str(root)
+    except ValueError:
+        return False
+
+
+def _reset_workspace(workspace, replays_root):
+    if workspace.is_symlink():
+        return False, "workspace is a symlink; refusing to operate"
+    if workspace.exists():
+        if not _within(workspace, replays_root):
+            return False, "workspace resolves outside replays root; refusing to delete"
+        shutil.rmtree(workspace, ignore_errors=True)
+    return True, None
 
 
 def _jaccard(set_a, set_b):
@@ -175,17 +198,22 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
 
     workspace = replay_dir / "workspace"
     workspace_created = False
-    if workspace.exists():
-        shutil.rmtree(workspace, ignore_errors=True)
+    ok, reason = _reset_workspace(workspace, replays_root)
+    if not ok:
+        return {"error": reason, "replay_id": replay_id, "model": model,
+                "executed": True, "scores": None}
 
     if remote_url:
         out, code = _run_cmd(["git", "clone", remote_url, str(workspace)], timeout=120)
-        if code == 0 and base_commit:
-            _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
-        if workspace.exists():
+        if code == 0 and workspace.exists():
+            if base_commit:
+                _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
+                if checkout_rc != 0:
+                    return {"error": f"git checkout {base_commit!r} failed", "replay_id": replay_id,
+                            "model": model, "executed": True, "scores": None}
             workspace_created = True
     elif repo:
-        candidate = manifest.get("repo_state", {}).get("root") if "repo_state" in manifest else None
+        candidate = manifest.get("repo_root")
         if candidate and Path(candidate).exists():
             try:
                 shutil.copytree(
@@ -205,9 +233,9 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
 
     if runner_template and workspace_created:
         cmd_str = runner_template.format(
-            model=model,
-            prompt_file=str(replay_dir / "prompt.txt"),
-            workspace=str(workspace),
+            model=shlex.quote(model),
+            prompt_file=shlex.quote(str(replay_dir / "prompt.txt")),
+            workspace=shlex.quote(str(workspace)),
         )
         runner_output, runner_rc = _run_cmd(cmd_str, cwd=str(workspace), timeout=300, shell=True)
         ran = True
@@ -220,7 +248,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
 
     if workspace_created and test_command:
         try:
-            out, rc = _run_cmd(test_command.split(), cwd=str(workspace), timeout=120)
+            out, rc = _run_cmd(shlex.split(test_command), cwd=str(workspace), timeout=120)
             ts = now_iso()
             tests_result = testdetect.detect_test_run(test_command, out, ts)
         except Exception:
