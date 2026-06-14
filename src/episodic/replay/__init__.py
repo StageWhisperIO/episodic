@@ -209,6 +209,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
             if base_commit:
                 _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
                 if checkout_rc != 0:
+                    shutil.rmtree(workspace, ignore_errors=True)
                     return {"error": f"git checkout {base_commit!r} failed", "replay_id": replay_id,
                             "model": model, "executed": True, "scores": None}
             workspace_created = True
