@@ -1,0 +1,10 @@
+{
+  "name": "episodic",
+  "version": "0.1.0",
+  "description": "Invisibly capture coding sessions into structured, outcome-labeled episodes; get instant summaries and PR notes.",
+  "author": { "name": "Episodic contributors" },
+  "homepage": "https://github.com/episodic/episodic",
+  "license": "MIT",
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "episodic",
+  "owner": { "name": "Episodic contributors" },
+  "metadata": {
+    "description": "Capture coding-agent sessions into structured, outcome-labeled episodes.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "episodic",
+      "source": "./plugin-claude-code",
+      "description": "Invisibly capture coding sessions; get instant summaries, PR notes, and ML-ready episodes."
+    }
+  ]
+}

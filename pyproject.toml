@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "episodic"
+version = "0.1.0"
+description = "Turn coding agent sessions into structured, outcome-labeled episodes for review, datasets, replay and offline RL."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Episodic contributors" }]
+keywords = ["claude-code", "codex", "llm", "agents", "rl", "datasets", "telemetry"]
+dependencies = []
+
+[project.optional-dependencies]
+datasets = ["pyarrow>=14", "datasets>=2.14"]
+rl = ["numpy>=1.24"]
+otel = []
+dev = ["pytest>=7"]
+
+[project.scripts]
+episodic = "episodic.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/episodic/episodic"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+episodic = ["py.typed"]

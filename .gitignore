@@ -1,0 +1,14 @@
+node_modules/
+.episodic/
+*.log
+.DS_Store
+dist/
+__pycache__/
+*.pyc
+.venv/
+replay-workspaces/
+exports/
+.pytest_cache/
+*.egg-info/
+build/
+rl-pipeline/out/

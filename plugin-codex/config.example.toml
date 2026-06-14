@@ -1,0 +1,8 @@
+# ~/.codex/config.toml
+# Replace /absolute/path/to/episodic with the actual path to your cloned repo.
+
+notify = ["python3", "/absolute/path/to/episodic/plugin-codex/notify.py"]
+
+# Optional: enable OpenTelemetry export by setting these env vars before running codex:
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# OTEL_SERVICE_NAME=codex

@@ -1,0 +1,390 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://episodic.dev/schemas/coding-episode.json",
+  "title": "CodingEpisode",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "created_at",
+    "agent",
+    "intent",
+    "repo_state",
+    "steps",
+    "diffs",
+    "commands",
+    "tests",
+    "human_feedback",
+    "outcome",
+    "reward_vector",
+    "stats",
+    "labels"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string",
+      "enum": [
+        "claude-code",
+        "codex",
+        "unknown"
+      ]
+    },
+    "intent": {
+      "type": "string"
+    },
+    "repo_state": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "ts",
+          "type",
+          "intent",
+          "input",
+          "observation"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "ts": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "tool": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": "string"
+          },
+          "input": {
+            "type": "object"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "approved": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "diffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "file",
+          "status",
+          "additions",
+          "deletions"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "additions": {
+            "type": "integer"
+          },
+          "deletions": {
+            "type": "integer"
+          },
+          "unified": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ts",
+          "command",
+          "is_test"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_excerpt": {
+            "type": "string"
+          },
+          "is_test": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ts",
+          "framework",
+          "passed",
+          "failed",
+          "ok"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "framework": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "human_feedback": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ts",
+          "label"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "enum": [
+              "useful",
+              "wrong",
+              "too_broad",
+              "too_slow",
+              "needed_human_rescue",
+              "accepted_as_is",
+              "accepted_after_edits"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "accepted",
+            "merged",
+            "failed",
+            "reverted",
+            "abandoned"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_number": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pr_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ci_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_decision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged": {
+          "type": "boolean"
+        },
+        "reverted": {
+          "type": "boolean"
+        },
+        "manual_edits_after_agent": {
+          "type": "boolean"
+        },
+        "linked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "reward_vector": {
+      "type": "object",
+      "required": [
+        "composite"
+      ],
+      "properties": {
+        "test_pass": {
+          "type": "number"
+        },
+        "human_label": {
+          "type": "number"
+        },
+        "outcome": {
+          "type": "number"
+        },
+        "cost_efficiency": {
+          "type": "number"
+        },
+        "edit_focus": {
+          "type": "number"
+        },
+        "composite": {
+          "type": "number"
+        },
+        "components": {
+          "type": "object"
+        }
+      }
+    },
+    "stats": {
+      "type": "object"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

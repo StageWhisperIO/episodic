@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "episodic ingest" }] }
+    ]
+  }
+}

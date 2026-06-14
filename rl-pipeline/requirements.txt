@@ -1,0 +1,7 @@
+numpy>=1.24
+
+# Optional training backends (install separately as needed):
+# trl
+# datasets
+# d3rlpy
+# torch
