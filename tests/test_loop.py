@@ -1,6 +1,8 @@
 import json
 import subprocess
 
+import pytest
+
 from episodic import store, loop
 from episodic.schema import new_episode
 from episodic.core import reward
@@ -55,6 +57,23 @@ def test_split_is_deterministic_and_total():
     assert [e["id"] for e in train_a] == [e["id"] for e in train_b]
     assert len(train_a) + len(holdout_a) == 20
     assert set(e["id"] for e in train_a).isdisjoint(e["id"] for e in holdout_a)
+
+
+def test_partition_is_order_independent():
+    pool = [{"id": f"ep_{i}", "reward_vector": {"composite": 0.9}} for i in range(10)]
+    forward = loop.partition(list(pool), 0.0, 0.3, seed=0)
+    backward = loop.partition(list(reversed(pool)), 0.0, 0.3, seed=0)
+    assert [e["id"] for e in forward[0]] == [e["id"] for e in backward[0]]
+    assert [e["id"] for e in forward[1]] == [e["id"] for e in backward[1]]
+
+
+def test_run_loop_rejects_bad_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    for key, value in [("holdout_frac", 1.5), ("max_holdout", -1),
+                       ("eval_concurrency", 0), ("promote_margin", "nope")]:
+        with pytest.raises(ValueError):
+            loop.run_loop({"trainer": "command", "format": "sft", key: value,
+                           "train_config": {"command": "true"}, "out": str(tmp_path / "o")})
 
 
 def test_partition_streams_filter_and_split_in_one_pass():

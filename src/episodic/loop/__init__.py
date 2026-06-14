@@ -34,7 +34,10 @@ def split_episodes(good, holdout_frac, seed):
 
 
 def partition(episodes, min_composite, holdout_frac, seed):
-    return split_episodes(select_good(episodes, min_composite), holdout_frac, seed)
+    train, holdout = split_episodes(select_good(episodes, min_composite), holdout_frac, seed)
+    train.sort(key=lambda episode: episode["id"])
+    holdout.sort(key=lambda episode: episode["id"])
+    return train, holdout
 
 
 def _mean(values):
@@ -65,15 +68,28 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _number(config, key, default, low=None, high=None, integer=False):
+    value = config.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a number, got {value!r}")
+    if integer and int(value) != value:
+        raise ValueError(f"{key} must be an integer, got {value!r}")
+    if low is not None and value < low:
+        raise ValueError(f"{key} must be >= {low}, got {value!r}")
+    if high is not None and value > high:
+        raise ValueError(f"{key} must be <= {high}, got {value!r}")
+    return int(value) if integer else value
+
+
 def run_loop(config, start=None):
     fmt = config.get("format", "sft")
     trainer_name = config.get("trainer", "trl-sft")
-    min_composite = config.get("min_composite", 0.5)
-    holdout_frac = config.get("holdout_frac", 0.2)
+    min_composite = _number(config, "min_composite", 0.5)
+    holdout_frac = _number(config, "holdout_frac", 0.2, low=0.0, high=1.0)
     seed = config.get("seed", 0)
-    margin = config.get("promote_margin", 0.0)
-    concurrency = config.get("eval_concurrency", 4)
-    max_holdout = config.get("max_holdout", 50)
+    margin = _number(config, "promote_margin", 0.0)
+    concurrency = _number(config, "eval_concurrency", 4, low=1, integer=True)
+    max_holdout = _number(config, "max_holdout", 50, low=0, integer=True)
     base_model = config.get("base_model", "base")
     train_config = config.get("train_config", {})
     runner_cmd = config.get("replay_cmd")

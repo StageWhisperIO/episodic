@@ -336,6 +336,8 @@ def cmd_loop(args):
     except trainers.TrainerUnavailable as exc:
         print(f"episodic: {exc.hint}", file=sys.stderr)
         return 0
+    except ValueError as exc:
+        _fail(str(exc))
     _print_json(manifest)
     return 0
 
