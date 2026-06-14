@@ -41,6 +41,10 @@ def partition(episodes, min_composite, holdout_frac, seed):
     return train, holdout
 
 
+def _finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _mean(values):
     return sum(values) / len(values) if values else None
 
@@ -128,7 +132,7 @@ def run_loop(config, start=None):
         return manifest
 
     scores = _evaluate(holdout_eval, candidate_model, base_model, runner_cmd, concurrency, start)
-    paired = [row for row in scores if row["candidate"] is not None and row["base"] is not None]
+    paired = [row for row in scores if _finite(row["candidate"]) and _finite(row["base"])]
     candidate_mean = _mean([row["candidate"] for row in paired])
     base_mean = _mean([row["base"] for row in paired])
 

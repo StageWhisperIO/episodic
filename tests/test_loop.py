@@ -59,6 +59,15 @@ def test_split_is_deterministic_and_total():
     assert set(e["id"] for e in train_a).isdisjoint(e["id"] for e in holdout_a)
 
 
+def test_finite_rejects_non_numeric_and_non_finite():
+    assert loop._finite(0.5) and loop._finite(0) and loop._finite(-1.0)
+    assert not loop._finite(None)
+    assert not loop._finite(float("nan"))
+    assert not loop._finite(float("inf"))
+    assert not loop._finite(True)
+    assert not loop._finite("0.5")
+
+
 def test_partition_is_order_independent():
     pool = [{"id": f"ep_{i}", "reward_vector": {"composite": 0.9}} for i in range(10)]
     forward = loop.partition(list(pool), 0.0, 0.3, seed=0)
