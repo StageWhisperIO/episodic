@@ -67,9 +67,96 @@ def test_map_rows():
     assert usage["input_tokens"] == 100 and usage["output_tokens"] == 20
 
 
+CUSTOM_TOOL_ROWS = [
+    {"type": "session_meta", "payload": {"id": "sess-real", "cwd": "/repo",
+                                          "git": {"commit_hash": "deadbeef", "branch": "main"}}},
+    {"type": "response_item", "payload": {
+        "type": "custom_tool_call", "name": "apply_patch", "call_id": "p1",
+        "input": "*** Begin Patch\n*** Update File: app/service.py\n@@\n-old = 1\n+new = 2\n*** End Patch",
+    }},
+    {"type": "response_item", "payload": {
+        "type": "custom_tool_call_output", "call_id": "p1",
+        "output": "{\"output\":\"Success. Updated the following files:\\nM app/service.py\\n\",\"metadata\":{\"exit_code\":0}}",
+    }},
+    {"type": "response_item", "payload": {
+        "type": "custom_tool_call", "name": "apply_patch", "call_id": "p2",
+        "input": "*** Begin Patch\n*** Delete File: app/gone.py\n*** End Patch",
+    }},
+    {"type": "response_item", "payload": {
+        "type": "custom_tool_call_output", "call_id": "p2",
+        "output": "{\"output\":\"apply_patch failed: File app/gone.py does not exist\",\"metadata\":{\"exit_code\":1}}",
+    }},
+]
+
+
+def test_custom_tool_call_patch():
+    _, _, payloads, _, git = import_rollout.map_rows(CUSTOM_TOOL_ROWS)
+    assert git["commit_hash"] == "deadbeef"
+
+    edits = [p for p in payloads if p.get("tool_name") == "Edit"]
+    assert len(edits) == 1
+    assert edits[0]["tool_input"]["file_path"].endswith("app/service.py")
+    assert "Update File: app/service.py" in edits[0]["tool_input"]["patch"]
+    assert edits[0]["tool_response"]["exit_code"] == 0
+
+    failed = [p for p in payloads if p.get("tool_name") == "ApplyPatch"]
+    assert len(failed) == 1
+    assert failed[0]["tool_response"]["exit_code"] == 1
+    assert not [p for p in payloads if p.get("tool_name") == "DeleteFile"]
+
+
 def test_parse_output():
     body, code = import_rollout._parse_output("Process exited with code 1\nOutput:\nboom\n")
     assert code == 1 and body.strip() == "boom"
+    body, code = import_rollout._parse_output(
+        "{\"output\":\"done\",\"metadata\":{\"exit_code\":0}}"
+    )
+    assert code == 0 and body == "done"
+
+
+def test_import_anchors_single_store():
+    import json
+    import tempfile
+
+    work = tempfile.mkdtemp()
+    other = tempfile.mkdtemp()
+    rollout = os.path.join(work, "rollout.jsonl")
+    rows = [
+        {"type": "session_meta", "payload": {"id": "anchor-test", "cwd": other,
+                                              "git": {"commit_hash": "c0ffee", "branch": "main"}}},
+        {"type": "response_item", "payload": {
+            "type": "function_call", "name": "exec_command", "call_id": "s1",
+            "arguments": json.dumps({"cmd": "ls", "workdir": other}),
+        }},
+        {"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "s1",
+            "output": "Process exited with code 0\nOutput:\nfile.txt\n",
+        }},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "apply_patch", "call_id": "p1",
+            "input": "*** Begin Patch\n*** Add File: new.py\n+x = 1\n*** End Patch",
+        }},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "p1",
+            "output": "{\"output\":\"Success. Updated the following files:\\nA new.py\\n\",\"metadata\":{\"exit_code\":0}}",
+        }},
+    ]
+    with open(rollout, "w") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+    import_rollout.import_rollout(rollout, session_id="anchor-test", cwd=work)
+
+    assert os.path.exists(os.path.join(work, ".episodic", "sessions", "anchor-test", "events.jsonl"))
+    assert not os.path.exists(os.path.join(other, ".episodic"))
+
+    from episodic import store
+    from episodic.core.episode import build_episode
+    episode = build_episode(store.get_session("anchor-test", start=work))
+    assert __import__("episodic").validate_episode(episode) == []
+    statuses = {d["status"] for d in episode["diffs"]}
+    assert "added" in statuses
+    assert any(s["type"] == "shell_command" for s in episode["steps"])
 
 
 def test_notify():
@@ -87,6 +174,8 @@ def test_notify():
 
 def main():
     test_map_rows()
+    test_custom_tool_call_patch()
+    test_import_anchors_single_store()
     test_parse_output()
     test_notify()
     print("ok")

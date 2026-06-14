@@ -44,8 +44,22 @@ def _command_from_arguments(args):
 
 
 def _parse_output(raw):
+    if raw is None:
+        return "", None
     if not isinstance(raw, str):
-        raw = json.dumps(raw) if raw is not None else ""
+        raw = json.dumps(raw)
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and ("output" in obj or "metadata" in obj):
+            body = obj.get("output")
+            if not isinstance(body, str):
+                body = json.dumps(body) if body is not None else ""
+            exit_code = (obj.get("metadata") or {}).get("exit_code")
+            return body, exit_code if isinstance(exit_code, int) else None
     exit_match = EXIT_CODE_RE.search(raw)
     exit_code = int(exit_match.group(1)) if exit_match else None
     index = raw.find(OUTPUT_MARKER)
@@ -53,23 +67,48 @@ def _parse_output(raw):
     return body, exit_code
 
 
-def _patch_ops(args, raw_arguments, cwd, name):
-    text = args.get("input") or args.get("patch") or args.get("file_path") or raw_arguments or ""
-    ops = [(op, path.strip()) for op, path in PATCH_OP_RE.findall(text)]
-    if not ops and args.get("file_path"):
-        ops = [(DEFAULT_PATCH_OP.get(name, "Update"), args["file_path"])]
+def _split_patch(text):
+    segments = []
+    current = None
+    for line in (text or "").splitlines():
+        header = PATCH_OP_RE.match(line)
+        if header:
+            if current:
+                segments.append(current)
+            current = [header.group(1), header.group(2).strip(), [line]]
+        elif current:
+            current[2].append(line)
+    if current:
+        segments.append(current)
+    return [(op, path, "\n".join(body)) for op, path, body in segments]
+
+
+def _patch_inputs(payload):
+    if payload.get("type") == "custom_tool_call":
+        text = payload.get("input") or ""
+        return {"input": text}, text
+    args = _parse_arguments(payload.get("arguments"))
+    text = args.get("input") or args.get("patch") or args.get("content") or ""
+    return args, text
+
+
+def _patch_segments(payload, cwd, name):
+    args, text = _patch_inputs(payload)
+    segments = _split_patch(text)
+    if not segments and args.get("file_path"):
+        segments = [(DEFAULT_PATCH_OP.get(name, "Update"), args["file_path"], text)]
     resolved = []
-    for op, path in ops:
+    for op, path, segment in segments:
         absolute = path if os.path.isabs(path) else os.path.join(cwd, path)
-        resolved.append((op, absolute))
-    return resolved
+        resolved.append((op, absolute, segment))
+    return args, resolved
 
 
 def _outputs_by_call(rows):
     outputs = {}
     for row in rows:
         payload = _payload(row)
-        if payload.get("type") == "function_call_output":
+        if payload.get("type") in ("function_call_output", "custom_tool_call_output"):
             outputs[payload.get("call_id")] = payload.get("output")
     return outputs
 
@@ -92,28 +131,31 @@ def map_rows(rows):
             if text:
                 payloads.append({"hook_event_name": "UserPromptSubmit", "prompt": text})
 
-        elif kind == "function_call":
+        elif kind in ("function_call", "custom_tool_call"):
             name = payload.get("name", "")
-            args = _parse_arguments(payload.get("arguments"))
             call_id = payload.get("call_id")
-            workdir = args.get("workdir") or args.get("cwd") or cwd
+            body, exit_code = _parse_output(outputs.get(call_id))
             if name in SHELL_FUNCTIONS:
-                command = _command_from_arguments(args)
-                body, exit_code = _parse_output(outputs.get(call_id))
+                args = _parse_arguments(payload.get("arguments"))
+                workdir = args.get("workdir") or args.get("cwd") or cwd
                 payloads.append({
                     "hook_event_name": "PostToolUse",
                     "tool_name": "Bash",
-                    "tool_input": {"command": command},
+                    "tool_input": {"command": _command_from_arguments(args)},
                     "tool_response": {"stdout": body, "exit_code": exit_code},
                     "cwd": workdir,
                 })
             elif name in PATCH_FUNCTIONS:
-                for op, path in _patch_ops(args, payload.get("arguments"), workdir, name):
+                args, segments = _patch_segments(payload, cwd, name)
+                workdir = args.get("workdir") or args.get("cwd") or cwd
+                applied = exit_code in (None, 0)
+                for op, path, segment in segments:
+                    tool_name = PATCH_OP_TOOL.get(op, "Edit") if applied else "ApplyPatch"
                     payloads.append({
                         "hook_event_name": "PostToolUse",
-                        "tool_name": PATCH_OP_TOOL.get(op, "Edit"),
-                        "tool_input": {"file_path": path},
-                        "tool_response": {"stdout": "applied"},
+                        "tool_name": tool_name,
+                        "tool_input": {"file_path": path, "patch": segment},
+                        "tool_response": {"stdout": body or "applied", "exit_code": exit_code},
                         "cwd": workdir,
                     })
 
@@ -145,27 +187,34 @@ def import_rollout(path, session_id=None, cwd=None):
     session_id = session_id or rollout_session
     cwd = cwd or rollout_cwd
 
-    ingest({"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd, "source": "exec"})
-    for payload in payloads:
-        payload["session_id"] = session_id
-        payload.setdefault("cwd", cwd)
-        ingest(payload)
+    prior_home = os.environ.get("EPISODIC_HOME")
+    if not prior_home:
+        os.environ["EPISODIC_HOME"] = os.path.join(cwd, ".episodic")
+    try:
+        ingest({"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd, "source": "exec"})
+        for payload in payloads:
+            payload["session_id"] = session_id
+            payload.setdefault("cwd", cwd)
+            ingest(payload)
 
-    from episodic import store
-    meta = store.read_meta(session_id, cwd)
-    meta["imported"] = True
-    repo_state = meta.get("repo_state") or {}
-    if git.get("commit_hash"):
-        repo_state["base_commit"] = git["commit_hash"]
-    if git.get("branch"):
-        repo_state["branch"] = git["branch"]
-    if repo_state:
-        meta["repo_state"] = repo_state
-    if usage:
-        meta["usage"] = usage
-    store.write_meta(session_id, meta, cwd)
+        from episodic import store
+        meta = store.read_meta(session_id, cwd)
+        meta["imported"] = True
+        repo_state = meta.get("repo_state") or {}
+        if git.get("commit_hash"):
+            repo_state["base_commit"] = git["commit_hash"]
+        if git.get("branch"):
+            repo_state["branch"] = git["branch"]
+        if repo_state:
+            meta["repo_state"] = repo_state
+        if usage:
+            meta["usage"] = usage
+        store.write_meta(session_id, meta, cwd)
 
-    ingest({"hook_event_name": "SessionEnd", "session_id": session_id, "cwd": cwd, "reason": "exec"})
+        ingest({"hook_event_name": "SessionEnd", "session_id": session_id, "cwd": cwd, "reason": "exec"})
+    finally:
+        if not prior_home:
+            del os.environ["EPISODIC_HOME"]
     return len(payloads)
 
 
