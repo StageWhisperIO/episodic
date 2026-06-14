@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -8,108 +9,149 @@ os.environ.setdefault("EPISODIC_AGENT", "codex")
 
 from episodic.collector.hook import ingest
 
+SHELL_FUNCTIONS = {"exec_command", "shell", "local_shell", "container.exec", "bash"}
+PATCH_FUNCTIONS = {"apply_patch", "edit_file", "write_file"}
 
-def _extract_patch_path(args_str):
-    lines = args_str.splitlines()
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("+++ ") or stripped.startswith("--- "):
-            candidate = stripped[4:].strip()
-            if candidate and candidate != "/dev/null":
-                return candidate.lstrip("b/")
-    return ""
+EXIT_CODE_RE = re.compile(r"Process exited with code (-?\d+)")
+PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
+OUTPUT_MARKER = "Output:\n"
 
 
-def map_rollout_line(obj):
-    line_type = obj.get("type", "")
+def _payload(row):
+    payload = row.get("payload")
+    return payload if isinstance(payload, dict) else {}
 
-    if line_type == "message" and obj.get("role") == "user":
-        content = obj.get("content", [])
-        texts = []
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "input_text":
-                    texts.append(part.get("text", ""))
-                elif isinstance(part, str):
-                    texts.append(part)
-        elif isinstance(content, str):
-            texts.append(content)
-        return {
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": " ".join(texts),
-        }
 
-    if line_type == "function_call":
-        name = obj.get("name", "")
-        args_raw = obj.get("arguments", "{}")
-        try:
-            args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-        except Exception:
-            args = {}
+def _parse_arguments(arguments):
+    if isinstance(arguments, dict):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except (TypeError, ValueError):
+        return {}
 
-        if name == "shell":
-            cmd = args.get("command", "")
-            if isinstance(cmd, list):
-                cmd = " ".join(cmd)
-            return {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Bash",
-                "tool_input": {"command": cmd},
-            }
 
-        if name == "apply_patch" or "apply_patch" in str(args_raw):
-            patch_content = args.get("patch", "") or args_raw
-            file_path = _extract_patch_path(str(patch_content))
-            return {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Edit",
-                "tool_input": {"file_path": file_path},
-            }
+def _command_from_arguments(args):
+    command = args.get("cmd")
+    if command is None:
+        command = args.get("command")
+    if isinstance(command, list):
+        return " ".join(str(part) for part in command)
+    return command or ""
 
-    if line_type == "function_call_output":
-        output = obj.get("output", "")
-        return {
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": ""},
-            "tool_response": {"stdout": output},
-        }
 
-    return None
+def _parse_output(raw):
+    if not isinstance(raw, str):
+        raw = json.dumps(raw) if raw is not None else ""
+    exit_match = EXIT_CODE_RE.search(raw)
+    exit_code = int(exit_match.group(1)) if exit_match else None
+    index = raw.find(OUTPUT_MARKER)
+    body = raw[index + len(OUTPUT_MARKER):] if index != -1 else raw
+    return body, exit_code
+
+
+def _patch_paths(args, raw_arguments, cwd):
+    text = args.get("input") or args.get("patch") or args.get("file_path") or raw_arguments or ""
+    paths = PATCH_PATH_RE.findall(text)
+    if not paths and args.get("file_path"):
+        paths = [args["file_path"]]
+    resolved = []
+    for path in paths:
+        path = path.strip()
+        resolved.append(path if os.path.isabs(path) else os.path.join(cwd, path))
+    return resolved
+
+
+def _outputs_by_call(rows):
+    outputs = {}
+    for row in rows:
+        payload = _payload(row)
+        if payload.get("type") == "function_call_output":
+            outputs[payload.get("call_id")] = payload.get("output")
+    return outputs
+
+
+def map_rows(rows):
+    session_meta = next((_payload(r) for r in rows if r.get("type") == "session_meta"), {})
+    session_id = session_meta.get("id") or "codex-session"
+    cwd = session_meta.get("cwd") or os.getcwd()
+    outputs = _outputs_by_call(rows)
+
+    payloads = []
+    usage = None
+    for row in rows:
+        payload = _payload(row)
+        kind = payload.get("type")
+
+        if kind == "user_message":
+            text = payload.get("message", "")
+            if text:
+                payloads.append({"hook_event_name": "UserPromptSubmit", "prompt": text})
+
+        elif kind == "function_call":
+            name = payload.get("name", "")
+            args = _parse_arguments(payload.get("arguments"))
+            call_id = payload.get("call_id")
+            if name in SHELL_FUNCTIONS:
+                command = _command_from_arguments(args)
+                body, exit_code = _parse_output(outputs.get(call_id))
+                payloads.append({
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": command},
+                    "tool_response": {"stdout": body, "exit_code": exit_code},
+                })
+            elif name in PATCH_FUNCTIONS:
+                for path in _patch_paths(args, payload.get("arguments"), cwd):
+                    payloads.append({
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": path},
+                        "tool_response": {"stdout": "applied"},
+                    })
+
+        elif kind == "token_count":
+            totals = (payload.get("info") or {}).get("total_token_usage") or {}
+            if totals:
+                usage = {
+                    "input_tokens": totals.get("input_tokens", 0),
+                    "output_tokens": totals.get("output_tokens", 0),
+                    "cost_usd": 0.0,
+                }
+
+    return session_id, cwd, payloads, usage
 
 
 def import_rollout(path, session_id=None, cwd=None):
-    session_id = session_id or os.path.splitext(os.path.basename(path))[0]
-    cwd = cwd or os.getcwd()
+    rows = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
 
-    ingest({"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd})
+    rollout_session, rollout_cwd, payloads, usage = map_rows(rows)
+    session_id = session_id or rollout_session
+    cwd = cwd or rollout_cwd
 
-    count = 0
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for raw_line in f:
-                raw_line = raw_line.strip()
-                if not raw_line:
-                    continue
-                try:
-                    obj = json.loads(raw_line)
-                except Exception:
-                    continue
-                mapped = map_rollout_line(obj)
-                if mapped is None:
-                    continue
-                mapped["session_id"] = session_id
-                mapped["cwd"] = cwd
-                try:
-                    ingest(mapped)
-                    count += 1
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    ingest({"hook_event_name": "SessionStart", "session_id": session_id, "cwd": cwd, "source": "exec"})
+    for payload in payloads:
+        payload["session_id"] = session_id
+        payload["cwd"] = cwd
+        ingest(payload)
 
-    ingest({"hook_event_name": "SessionEnd", "session_id": session_id, "cwd": cwd})
-    return count
+    if usage:
+        from episodic import store
+        meta = store.read_meta(session_id, cwd)
+        meta["usage"] = usage
+        store.write_meta(session_id, meta, cwd)
+
+    ingest({"hook_event_name": "SessionEnd", "session_id": session_id, "cwd": cwd, "reason": "exec"})
+    return len(payloads)
 
 
 def main():
@@ -119,7 +161,7 @@ def main():
     path = sys.argv[1]
     session_id = sys.argv[2] if len(sys.argv) > 2 else None
     count = import_rollout(path, session_id=session_id)
-    print(f"ingested {count} events from {path}")
+    print(f"ingested {count} tool/prompt events from {path}")
     return 0
 
 

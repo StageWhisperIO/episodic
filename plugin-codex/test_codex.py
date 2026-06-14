@@ -1,141 +1,82 @@
-import importlib
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-notify = importlib.import_module("notify")
-import_rollout_mod = importlib.import_module("import_rollout")
-
-codex_to_hook = notify.codex_to_hook
-map_rollout_line = import_rollout_mod.map_rollout_line
+import import_rollout
+import notify
 
 
-def test_codex_to_hook_turn_complete():
-    payload = {
-        "type": "agent-turn-complete",
-        "turn-id": "t1",
-        "input-messages": ["hello world"],
-        "last-assistant-message": "done",
-    }
-    results = codex_to_hook(payload)
-    assert len(results) >= 1
-    user_prompts = [r for r in results if r["hook_event_name"] == "UserPromptSubmit"]
-    assert len(user_prompts) == 1
-    assert "hello world" in user_prompts[0]["prompt"]
-    stops = [r for r in results if r["hook_event_name"] == "Stop"]
-    assert len(stops) == 1
-
-
-def test_codex_to_hook_session_id_from_turn_id():
-    payload = {
-        "type": "agent-turn-complete",
-        "turn-id": "myturnabc",
-        "input-messages": ["test"],
-    }
-    results = codex_to_hook(payload)
-    for r in results:
-        assert r["session_id"] == "myturnabc"
-
-
-def test_codex_to_hook_session_id_from_session_id():
-    payload = {
-        "type": "agent-turn-complete",
-        "session-id": "mysession",
-        "turn-id": "t2",
-        "input-messages": ["test"],
-    }
-    results = codex_to_hook(payload)
-    for r in results:
-        assert r["session_id"] == "mysession"
-
-
-def test_map_rollout_line_user_message():
-    obj = {
-        "type": "message",
-        "role": "user",
-        "content": [{"type": "input_text", "text": "run the tests"}],
-    }
-    result = map_rollout_line(obj)
-    assert result is not None
-    assert result["hook_event_name"] == "UserPromptSubmit"
-    assert "run the tests" in result["prompt"]
-
-
-def test_map_rollout_line_shell_function_call():
-    obj = {
+ROLLOUT_ROWS = [
+    {"type": "session_meta", "payload": {"id": "sess-abc", "cwd": "/repo", "cli_version": "0.135.0"}},
+    {"type": "turn_context", "payload": {"type": "turn_context"}},
+    {"type": "event_msg", "payload": {"type": "user_message", "message": "Create foo.py and run pytest"}},
+    {"type": "response_item", "payload": {
         "type": "function_call",
-        "name": "shell",
-        "arguments": '{"command": ["bash", "-lc", "pytest"]}',
-    }
-    result = map_rollout_line(obj)
-    assert result is not None
-    assert result["hook_event_name"] == "PostToolUse"
-    assert result["tool_name"] == "Bash"
-    assert "pytest" in result["tool_input"]["command"]
-
-
-def test_map_rollout_line_shell_string_command():
-    obj = {
-        "type": "function_call",
-        "name": "shell",
-        "arguments": '{"command": "ls -la"}',
-    }
-    result = map_rollout_line(obj)
-    assert result is not None
-    assert result["tool_input"]["command"] == "ls -la"
-
-
-def test_map_rollout_line_apply_patch():
-    patch = "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new"
-    obj = {
+        "name": "exec_command",
+        "arguments": "{\"cmd\": \"python3 -m pytest -q\", \"workdir\": \"/repo\"}",
+        "call_id": "c1",
+    }},
+    {"type": "response_item", "payload": {
+        "type": "function_call_output",
+        "call_id": "c1",
+        "output": "Chunk ID: 0\nProcess exited with code 0\nOutput:\n..\n2 passed in 0.01s\n",
+    }},
+    {"type": "response_item", "payload": {
         "type": "function_call",
         "name": "apply_patch",
-        "arguments": f'{{"patch": "{patch}"}}',
-    }
-    result = map_rollout_line(obj)
-    assert result is not None
-    assert result["hook_event_name"] == "PostToolUse"
-    assert result["tool_name"] == "Edit"
+        "arguments": "{\"input\": \"*** Begin Patch\\n*** Add File: src/new.py\\n+x = 1\\n*** End Patch\"}",
+        "call_id": "c2",
+    }},
+    {"type": "event_msg", "payload": {
+        "type": "token_count",
+        "info": {"total_token_usage": {"input_tokens": 100, "output_tokens": 20}},
+    }},
+]
 
 
-def test_map_rollout_line_unknown_returns_none():
-    obj = {"type": "unknown_event", "data": "something"}
-    result = map_rollout_line(obj)
-    assert result is None
+def test_map_rows():
+    session_id, cwd, payloads, usage = import_rollout.map_rows(ROLLOUT_ROWS)
+    assert session_id == "sess-abc"
+    assert cwd == "/repo"
+
+    prompts = [p for p in payloads if p["hook_event_name"] == "UserPromptSubmit"]
+    assert len(prompts) == 1 and "foo.py" in prompts[0]["prompt"]
+
+    bash = [p for p in payloads if p.get("tool_name") == "Bash"]
+    assert len(bash) == 1
+    assert bash[0]["tool_input"]["command"] == "python3 -m pytest -q"
+    assert bash[0]["tool_response"]["exit_code"] == 0
+    assert "2 passed" in bash[0]["tool_response"]["stdout"]
+
+    edits = [p for p in payloads if p.get("tool_name") == "Edit"]
+    assert len(edits) == 1 and edits[0]["tool_input"]["file_path"].endswith("src/new.py")
+
+    assert usage["input_tokens"] == 100 and usage["output_tokens"] == 20
 
 
-def test_codex_to_hook_no_input_messages():
-    payload = {"type": "agent-turn-complete", "turn-id": "t3"}
-    results = codex_to_hook(payload)
-    stops = [r for r in results if r["hook_event_name"] == "Stop"]
-    assert len(stops) == 1
-    user_prompts = [r for r in results if r["hook_event_name"] == "UserPromptSubmit"]
-    assert len(user_prompts) == 0
+def test_parse_output():
+    body, code = import_rollout._parse_output("Process exited with code 1\nOutput:\nboom\n")
+    assert code == 1 and body.strip() == "boom"
+
+
+def test_notify():
+    out = notify.codex_to_hook({
+        "type": "agent-turn-complete",
+        "turn-id": "t1",
+        "input-messages": ["fix the bug"],
+        "last-assistant-message": "done",
+    })
+    kinds = [p["hook_event_name"] for p in out]
+    assert "UserPromptSubmit" in kinds
+    assert "Stop" in kinds
+    assert any("fix the bug" in p.get("prompt", "") for p in out)
 
 
 def main():
-    tests = [
-        test_codex_to_hook_turn_complete,
-        test_codex_to_hook_session_id_from_turn_id,
-        test_codex_to_hook_session_id_from_session_id,
-        test_map_rollout_line_user_message,
-        test_map_rollout_line_shell_function_call,
-        test_map_rollout_line_shell_string_command,
-        test_map_rollout_line_apply_patch,
-        test_map_rollout_line_unknown_returns_none,
-        test_codex_to_hook_no_input_messages,
-    ]
-    for t in tests:
-        try:
-            t()
-        except AssertionError as e:
-            print(f"FAIL {t.__name__}: {e}", file=sys.stderr)
-            return 1
-        except Exception as e:
-            print(f"ERROR {t.__name__}: {e}", file=sys.stderr)
-            return 1
+    test_map_rows()
+    test_parse_output()
+    test_notify()
     print("ok")
     return 0
 

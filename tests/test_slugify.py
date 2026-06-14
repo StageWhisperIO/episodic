@@ -1,4 +1,4 @@
-from examples.slugify import slugify
+from examples.slugify import slugify, deslugify
 
 
 def test_spaces():
@@ -19,3 +19,7 @@ def test_leading_trailing_symbols():
 
 def test_collapses_runs():
     assert slugify("a   b___c") == "a-b-c"
+
+
+def test_deslugify():
+    assert deslugify("hello-world") == "Hello World"

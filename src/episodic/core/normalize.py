@@ -58,6 +58,14 @@ def _file_path(tool_input):
     return None
 
 
+def _exit_code(raw_response):
+    if isinstance(raw_response, dict):
+        value = raw_response.get("exit_code")
+        if isinstance(value, int):
+            return value
+    return None
+
+
 def _looks_denied(response_text):
     lowered = response_text.lower()
     return any(marker in lowered for marker in DENIAL_MARKERS)
@@ -103,7 +111,8 @@ def event_from_hook(payload, source="claude-code"):
         })
 
     if hook == "PostToolUse":
-        response_text = _truncate(_stringify(payload.get("tool_response")))
+        raw_response = payload.get("tool_response")
+        response_text = _truncate(_stringify(raw_response))
         denied = _looks_denied(response_text)
         base_data = {
             "tool_input": tool_input,
@@ -117,6 +126,7 @@ def event_from_hook(payload, source="claude-code"):
             return build("shell_command", tool_name=tool_name, data={
                 **base_data,
                 "command": tool_input.get("command", ""),
+                "exit_code": _exit_code(raw_response),
             })
         if tool_name in FILE_EDIT_TOOLS:
             return build("file_edit", tool_name=tool_name, data={
