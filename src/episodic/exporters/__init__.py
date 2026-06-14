@@ -167,7 +167,7 @@ def _export_rlds(episodes, out_dir):
                 "is_first": i == 0,
                 "is_last": is_last,
                 "is_terminal": is_last,
-                "discount": 1.0,
+                "discount": 0.0 if is_last else 1.0,
             })
         rows.append({"episode_id": ep["id"], "steps": rlds_steps})
     path = out_dir / "rlds.jsonl"

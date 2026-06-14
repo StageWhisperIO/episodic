@@ -136,6 +136,11 @@ def main():
     assert abs(ep2_terminal["reward"] - ep2_composite) < 1e-9, (
         f"ep2 terminal reward mismatch: {ep2_terminal['reward']} != {ep2_composite}"
     )
+    for t in transitions:
+        expected_discount = 0.0 if t["terminal"] else 1.0
+        assert t["discount"] == expected_discount, (
+            f"discount {t['discount']} wrong for terminal={t['terminal']}"
+        )
 
     eval_result = stages.evaluate(episodes, model)
     assert "n" in eval_result

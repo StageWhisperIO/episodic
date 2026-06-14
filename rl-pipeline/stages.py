@@ -269,7 +269,7 @@ def rl_batches(episodes):
                 "observation": step.get("observation", ""),
                 "reward": composite if is_terminal else 0.0,
                 "terminal": is_terminal,
-                "discount": 1.0,
+                "discount": 0.0 if is_terminal else 1.0,
             })
     return transitions
 
