@@ -105,6 +105,25 @@ def test_custom_tool_call_patch():
     assert not [p for p in payloads if p.get("tool_name") == "DeleteFile"]
 
 
+def test_patch_path_resolves_against_workdir():
+    import json
+    rows = [
+        {"type": "session_meta", "payload": {"id": "wd", "cwd": "/root"}},
+        {"type": "response_item", "payload": {
+            "type": "function_call", "name": "apply_patch", "call_id": "e1",
+            "arguments": json.dumps({
+                "input": "*** Begin Patch\n*** Add File: rel.py\n+x = 1\n*** End Patch",
+                "workdir": "/root/sub",
+            }),
+        }},
+    ]
+    _, _, payloads, _, _ = import_rollout.map_rows(rows)
+    writes = [p for p in payloads if p["tool_name"] == "Write"]
+    assert len(writes) == 1
+    assert writes[0]["tool_input"]["file_path"] == "/root/sub/rel.py"
+    assert writes[0]["cwd"] == "/root/sub"
+
+
 def test_parse_output():
     body, code = import_rollout._parse_output("Process exited with code 1\nOutput:\nboom\n")
     assert code == 1 and body.strip() == "boom"
@@ -176,6 +195,7 @@ def main():
     test_map_rows()
     test_custom_tool_call_patch()
     test_import_anchors_single_store()
+    test_patch_path_resolves_against_workdir()
     test_parse_output()
     test_notify()
     print("ok")

@@ -92,8 +92,7 @@ def _patch_inputs(payload):
     return args, text
 
 
-def _patch_segments(payload, cwd, name):
-    args, text = _patch_inputs(payload)
+def _patch_segments(text, args, cwd, name):
     segments = _split_patch(text)
     if not segments and args.get("file_path"):
         segments = [(DEFAULT_PATCH_OP.get(name, "Update"), args["file_path"], text)]
@@ -101,7 +100,7 @@ def _patch_segments(payload, cwd, name):
     for op, path, segment in segments:
         absolute = path if os.path.isabs(path) else os.path.join(cwd, path)
         resolved.append((op, absolute, segment))
-    return args, resolved
+    return resolved
 
 
 def _outputs_by_call(rows):
@@ -146,10 +145,10 @@ def map_rows(rows):
                     "cwd": workdir,
                 })
             elif name in PATCH_FUNCTIONS:
-                args, segments = _patch_segments(payload, cwd, name)
+                args, text = _patch_inputs(payload)
                 workdir = args.get("workdir") or args.get("cwd") or cwd
                 applied = exit_code in (None, 0)
-                for op, path, segment in segments:
+                for op, path, segment in _patch_segments(text, args, workdir, name):
                     tool_name = PATCH_OP_TOOL.get(op, "Edit") if applied else "ApplyPatch"
                     payloads.append({
                         "hook_event_name": "PostToolUse",
