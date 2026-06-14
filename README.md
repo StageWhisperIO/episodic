@@ -1,8 +1,9 @@
 # Episodic
 
-Turn coding-agent sessions into structured, outcome-labeled **episodes** — for instant
-session summaries and PR notes today, and SFT / DPO / reward / RLDS datasets, replayable
-tasks, and offline RL tomorrow.
+Turn coding-agent sessions into structured, outcome-labeled **episodes** — instant
+session summaries and PR notes, SFT / DPO / reward / RLDS datasets, replayable tasks, a
+reward model, and offline-RL transition batches. You bring the trainer (TRL is the default,
+any backend plugs in); Episodic produces everything it eats.
 
 Episodic runs as a **Claude Code plugin** (and a Codex integration). It captures your
 session invisibly through hooks, normalizes it into a single `CodingEpisode` object, and
@@ -42,6 +43,7 @@ The base install is **stdlib-only** (fast hooks, no heavy deps). Optional extras
 ```bash
 pip install -e ".[datasets]"   # pyarrow + datasets  → real Parquet export
 pip install -e ".[rl]"         # numpy               → reward-model fit
+pip install -e ".[trl]"        # torch + trl         → SFT / DPO fine-tuning
 ```
 
 ### 2. Add the Claude Code plugin
@@ -71,6 +73,28 @@ The `episodic` CLI must be on your `PATH`.
 
 Everything is also available directly: `episodic summary`, `episodic list`,
 `episodic link --auto`, `episodic dashboard`, …
+
+### 4. Train (pluggable)
+
+Datasets are JSONL, so training is just another filter on the pipe. The default backend is
+**TRL**; the `command` trainer shells out to any executable; bring your own by registering an
+`episodic.trainers` entry point.
+
+```bash
+episodic train --list                                          # show backends
+episodic export-episode --all --format sft --out - | \
+  episodic train --trainer trl-sft --model HuggingFaceTB/SmolLM2-135M-Instruct --out runs/sft
+episodic train runs/dpo.jsonl --trainer command \
+  --config '{"command": "my-trainer --data {dataset} --out {out}"}'
+```
+
+Each run writes `manifest.json` (dataset sha256, episode ids, base commit, config, metrics)
+for provenance. Without `[trl]` installed, `episodic train` prints the ready dataset path
+instead of failing — separation of mechanism (Episodic) from policy (your trainer).
+
+> **What Episodic does not do:** run the gradient updates for you beyond invoking a backend.
+> It produces datasets, a (linear) reward model, and RL transition batches; the LLM training
+> step is owned by the trainer plugin.
 
 ---
 
