@@ -10,9 +10,16 @@ STEP_EVENT_TYPES = {
     "file_read",
     "file_edit",
     "file_write",
+    "file_delete",
     "shell_command",
     "tool_post",
     "denial",
+}
+
+DIFF_STATUS_BY_TYPE = {
+    "file_write": "added",
+    "file_edit": "modified",
+    "file_delete": "deleted",
 }
 
 OBSERVATION_LIMIT = 600
@@ -39,8 +46,8 @@ def _step_intent(event):
         return _first_line(data.get("prompt", ""))[:200]
     if event["type"] == "shell_command":
         return data.get("command", "")[:200]
-    if event["type"] in ("file_edit", "file_write", "file_read"):
-        verb = {"file_edit": "edit", "file_write": "write", "file_read": "read"}[event["type"]]
+    if event["type"] in ("file_edit", "file_write", "file_read", "file_delete"):
+        verb = {"file_edit": "edit", "file_write": "write", "file_read": "read", "file_delete": "delete"}[event["type"]]
         return f"{verb} {data.get('file_path') or '?'}"
     if event["type"] == "denial":
         return f"denied {event.get('tool_name') or 'tool'}"
@@ -125,11 +132,10 @@ def _event_diffs(repo_state, cwd, events):
     base = repo_state.get("root") or cwd
     touched = {}
     for event in events:
-        if event["type"] in ("file_edit", "file_write"):
+        if event["type"] in DIFF_STATUS_BY_TYPE:
             path = event["data"].get("file_path")
             if path:
-                status = "added" if event["type"] == "file_write" else "modified"
-                touched[_relativize(path, base)] = status
+                touched[_relativize(path, base)] = DIFF_STATUS_BY_TYPE[event["type"]]
     return [
         {"file": path, "status": status, "additions": 0, "deletions": 0, "unified": None}
         for path, status in sorted(touched.items())
@@ -158,11 +164,11 @@ def _build_stats(events, meta):
         stats["duration_ms"] = int((max(timestamps) - min(timestamps)).total_seconds() * 1000)
     for event in events:
         kind = event["type"]
-        if kind in ("file_edit", "file_write", "file_read", "shell_command", "tool_post"):
+        if kind in ("file_edit", "file_write", "file_delete", "file_read", "shell_command", "tool_post"):
             stats["tool_calls"] += 1
         if kind == "file_read":
             stats["file_reads"] += 1
-        if kind in ("file_edit", "file_write"):
+        if kind in ("file_edit", "file_write", "file_delete"):
             stats["file_edits"] += 1
         if kind == "shell_command":
             stats["shell_commands"] += 1

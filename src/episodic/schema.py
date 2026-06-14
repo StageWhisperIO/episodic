@@ -15,6 +15,7 @@ EVENT_TYPES = (
     "file_read",
     "file_edit",
     "file_write",
+    "file_delete",
     "shell_command",
     "test_run",
     "approval",

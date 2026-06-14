@@ -65,6 +65,7 @@ def test_rlds_export(episodes, tmp_path):
     assert last_step["is_last"] is True
     assert last_step["discount"] == 0.0
     good_ep = next(ep for ep in episodes if ep["id"] == "ep_test_good")
+    assert last_step["next_observation"] == good_ep["steps"][-1].get("observation", "")
     expected_reward = (good_ep.get("reward_vector") or {}).get("composite") or 0.0
     assert last_step["reward"] == pytest.approx(expected_reward)
     first_step = steps[0]

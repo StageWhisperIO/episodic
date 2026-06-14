@@ -2,6 +2,7 @@ from ..schema import new_event
 
 FILE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit"}
 FILE_WRITE_TOOLS = {"Write"}
+FILE_DELETE_TOOLS = {"DeleteFile"}
 FILE_READ_TOOLS = {"Read", "NotebookRead"}
 SHELL_TOOLS = {"Bash", "BashOutput"}
 
@@ -135,6 +136,11 @@ def event_from_hook(payload, source="claude-code"):
             })
         if tool_name in FILE_WRITE_TOOLS:
             return build("file_write", tool_name=tool_name, data={
+                **base_data,
+                "file_path": _file_path(tool_input),
+            })
+        if tool_name in FILE_DELETE_TOOLS:
+            return build("file_delete", tool_name=tool_name, data={
                 **base_data,
                 "file_path": _file_path(tool_input),
             })

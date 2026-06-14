@@ -13,8 +13,11 @@ SHELL_FUNCTIONS = {"exec_command", "shell", "local_shell", "container.exec", "ba
 PATCH_FUNCTIONS = {"apply_patch", "edit_file", "write_file"}
 
 EXIT_CODE_RE = re.compile(r"Process exited with code (-?\d+)")
-PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
+PATCH_OP_RE = re.compile(r"^\*\*\* (Add|Update|Delete) File: (.+)$", re.M)
 OUTPUT_MARKER = "Output:\n"
+
+PATCH_OP_TOOL = {"Add": "Write", "Update": "Edit", "Delete": "DeleteFile"}
+DEFAULT_PATCH_OP = {"write_file": "Add", "edit_file": "Update", "apply_patch": "Update"}
 
 
 def _payload(row):
@@ -50,15 +53,15 @@ def _parse_output(raw):
     return body, exit_code
 
 
-def _patch_paths(args, raw_arguments, cwd):
+def _patch_ops(args, raw_arguments, cwd, name):
     text = args.get("input") or args.get("patch") or args.get("file_path") or raw_arguments or ""
-    paths = PATCH_PATH_RE.findall(text)
-    if not paths and args.get("file_path"):
-        paths = [args["file_path"]]
+    ops = [(op, path.strip()) for op, path in PATCH_OP_RE.findall(text)]
+    if not ops and args.get("file_path"):
+        ops = [(DEFAULT_PATCH_OP.get(name, "Update"), args["file_path"])]
     resolved = []
-    for path in paths:
-        path = path.strip()
-        resolved.append(path if os.path.isabs(path) else os.path.join(cwd, path))
+    for op, path in ops:
+        absolute = path if os.path.isabs(path) else os.path.join(cwd, path)
+        resolved.append((op, absolute))
     return resolved
 
 
@@ -105,10 +108,10 @@ def map_rows(rows):
                     "cwd": workdir,
                 })
             elif name in PATCH_FUNCTIONS:
-                for path in _patch_paths(args, payload.get("arguments"), workdir):
+                for op, path in _patch_ops(args, payload.get("arguments"), workdir, name):
                     payloads.append({
                         "hook_event_name": "PostToolUse",
-                        "tool_name": "Edit",
+                        "tool_name": PATCH_OP_TOOL.get(op, "Edit"),
                         "tool_input": {"file_path": path},
                         "tool_response": {"stdout": "applied"},
                         "cwd": workdir,

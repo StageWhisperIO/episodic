@@ -29,6 +29,12 @@ ROLLOUT_ROWS = [
         "arguments": "{\"input\": \"*** Begin Patch\\n*** Add File: src/new.py\\n+x = 1\\n*** End Patch\"}",
         "call_id": "c2",
     }},
+    {"type": "response_item", "payload": {
+        "type": "function_call",
+        "name": "apply_patch",
+        "arguments": "{\"input\": \"*** Begin Patch\\n*** Delete File: src/old.py\\n*** End Patch\"}",
+        "call_id": "c3",
+    }},
     {"type": "event_msg", "payload": {
         "type": "token_count",
         "info": {"total_token_usage": {"input_tokens": 100, "output_tokens": 20}},
@@ -52,8 +58,11 @@ def test_map_rows():
     assert "2 passed" in bash[0]["tool_response"]["stdout"]
     assert bash[0]["cwd"] == "/repo/sub"
 
-    edits = [p for p in payloads if p.get("tool_name") == "Edit"]
-    assert len(edits) == 1 and edits[0]["tool_input"]["file_path"].endswith("src/new.py")
+    writes = [p for p in payloads if p.get("tool_name") == "Write"]
+    assert len(writes) == 1 and writes[0]["tool_input"]["file_path"].endswith("src/new.py")
+
+    deletes = [p for p in payloads if p.get("tool_name") == "DeleteFile"]
+    assert len(deletes) == 1 and deletes[0]["tool_input"]["file_path"].endswith("src/old.py")
 
     assert usage["input_tokens"] == 100 and usage["output_tokens"] == 20
 

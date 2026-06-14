@@ -163,6 +163,7 @@ def _export_rlds(episodes, out_dir):
                     "type": step.get("type"),
                     "cwd": step.get("cwd"),
                 },
+                "next_observation": step.get("observation", ""),
                 "reward": composite if is_last else 0.0,
                 "is_first": i == 0,
                 "is_last": is_last,
