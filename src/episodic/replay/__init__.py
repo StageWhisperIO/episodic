@@ -215,16 +215,20 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
             workspace_created = True
     elif repo:
         candidate = manifest.get("repo_root")
-        if candidate and Path(candidate).exists():
+        if candidate and (Path(candidate) / ".git").exists():
             try:
                 shutil.copytree(
                     candidate,
                     str(workspace),
                     ignore=shutil.ignore_patterns(".git", ".episodic", "node_modules"),
+                    symlinks=True,
                 )
                 workspace_created = True
             except Exception:
                 pass
+
+    if not workspace_created and workspace.exists() and not workspace.is_symlink():
+        shutil.rmtree(workspace, ignore_errors=True)
 
     runner_template = runner_cmd or os.environ.get("EPISODIC_REPLAY_CMD")
     ran = False

@@ -124,6 +124,7 @@ def test_run_replay_local_repo_fallback_copies_root(tmp_path, monkeypatch, sampl
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
     local = tmp_path / "localrepo"
     local.mkdir()
+    (local / ".git").mkdir()
     (local / "mod.py").write_text("x = 1\n")
     sample_episode["repo_state"]["remote_url"] = None
     sample_episode["repo_state"]["root"] = str(local)
@@ -136,6 +137,24 @@ def test_run_replay_local_repo_fallback_copies_root(tmp_path, monkeypatch, sampl
     workspace = tmp_path / "replays" / replay_id / "workspace"
     assert (workspace / "mod.py").exists()
     assert result["workspace"] == str(workspace)
+
+
+def test_run_replay_local_fallback_refuses_non_git_dir(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    local = tmp_path / "not-a-repo"
+    local.mkdir()
+    (local / "secret.txt").write_text("do not copy")
+    sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(local)
+    sample_episode["commands"] = []
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+
+    result = run_replay(replay_id, "test-model", execute=True)
+
+    assert result.get("dry_run") is True
+    assert not (tmp_path / "replays" / replay_id / "workspace").exists()
 
 
 def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sample_episode):
@@ -151,3 +170,4 @@ def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sa
         pytest.fail(f"run_replay raised unexpectedly: {exc}")
 
     assert isinstance(result, dict)
+    assert not (tmp_path / "replays" / replay_id / "workspace").exists()
