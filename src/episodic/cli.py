@@ -208,7 +208,7 @@ def cmd_replay(args):
         manifest = replay.create_replay(episode)
         _print_json(manifest)
     elif args.replay_command == "run":
-        result = replay.run_replay(args.replay, args.model)
+        result = replay.run_replay(args.replay, args.model, runner_cmd=args.runner_cmd, execute=args.execute)
         _print_json(result)
     else:
         _fail("use `replay create` or `replay run`")
@@ -408,6 +408,10 @@ def build_parser():
     replay.add_argument("--session")
     replay.add_argument("--replay")
     replay.add_argument("--model", default="claude-code")
+    replay.add_argument("--runner-cmd", dest="runner_cmd",
+                        help="shell template to drive the model: {model} {prompt_file} {workspace}")
+    replay.add_argument("--execute", action="store_true",
+                        help="clone the repo and run the recorded test command + runner (off by default)")
     replay.set_defaults(func=cmd_replay)
 
     listing = sub.add_parser("list", help="list captured episodes")

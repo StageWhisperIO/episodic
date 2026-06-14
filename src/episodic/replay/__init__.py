@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,7 +14,8 @@ from episodic.core import testdetect
 def replay_id_for(episode):
     raw = episode["id"]
     suffix = raw.removeprefix("ep_")
-    return "rp_" + suffix
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", suffix)
+    return "rp_" + (safe or "unknown")
 
 
 def infer_test_command(repo_root, episode):
@@ -137,14 +139,33 @@ def _jaccard(set_a, set_b):
     return len(set_a & set_b) / len(union)
 
 
-def run_replay(replay_id, model, start=None, runner_cmd=None):
-    replay_dir = paths.replays_dir(start) / replay_id
+def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
+    replays_root = paths.replays_dir(start).resolve()
+    replay_dir = (replays_root / replay_id).resolve()
+    if os.path.commonpath([str(replay_dir), str(replays_root)]) != str(replays_root):
+        return {"error": f"replay id escapes replays root: {replay_id!r}"}
     manifest_path = replay_dir / "manifest.json"
 
     if not manifest_path.exists():
         return {"error": f"manifest not found: {manifest_path}"}
 
     manifest = json.loads(manifest_path.read_text())
+
+    if not execute:
+        return {
+            "replay_id": replay_id,
+            "model": model,
+            "ran": False,
+            "executed": False,
+            "scores": None,
+            "note": "not executed: pass execute=true / --execute to clone the repo and run "
+                    "the recorded test command and runner.",
+            "plan": {
+                "remote_url": manifest.get("remote_url"),
+                "test_command": manifest.get("test_command"),
+                "runner_cmd": runner_cmd or os.environ.get("EPISODIC_REPLAY_CMD"),
+            },
+        }
 
     remote_url = manifest.get("remote_url")
     base_commit = manifest.get("base_commit")

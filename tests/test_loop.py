@@ -57,6 +57,24 @@ def test_split_is_deterministic_and_total():
     assert set(e["id"] for e in train_a).isdisjoint(e["id"] for e in holdout_a)
 
 
+def test_partition_streams_filter_and_split_in_one_pass():
+    consumed = []
+
+    def episodes():
+        for i in range(20):
+            composite = 0.9 if i % 2 == 0 else 0.1
+            ep = {"id": f"ep_{i}", "reward_vector": {"composite": composite}}
+            consumed.append(ep["id"])
+            yield ep
+
+    train, holdout = loop.partition(episodes(), min_composite=0.5, holdout_frac=0.3, seed=0)
+
+    kept = {e["id"] for e in train} | {e["id"] for e in holdout}
+    assert kept == {f"ep_{i}" for i in range(20) if i % 2 == 0}
+    assert len(consumed) == 20
+    assert set(e["id"] for e in train).isdisjoint(e["id"] for e in holdout)
+
+
 def test_loop_dry_run_trains_but_does_not_execute(tmp_path, monkeypatch):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
     origin, sha = _origin_repo(tmp_path)

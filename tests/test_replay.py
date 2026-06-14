@@ -12,6 +12,13 @@ def test_replay_id_for(sample_episode):
     assert "ep_" not in rid
 
 
+def test_replay_id_for_sanitizes_path_chars():
+    rid = replay_id_for({"id": "ep_../../etc/passwd"})
+    assert rid.startswith("rp_")
+    assert "/" not in rid
+    assert ".." not in rid
+
+
 def test_create_replay_manifest_fields(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     manifest = create_replay(sample_episode)
@@ -47,7 +54,7 @@ def test_create_replay_writes_files(tmp_path, monkeypatch, sample_episode):
     assert "src/http.py" in diff_text or diff_text == "" or len(diff_text) >= 0
 
 
-def test_run_replay_returns_dict_never_raises(tmp_path, monkeypatch, sample_episode):
+def test_run_replay_without_execute_returns_plan_and_does_not_clone(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     manifest = create_replay(sample_episode)
     replay_id = manifest["replay_id"]
@@ -57,17 +64,21 @@ def test_run_replay_returns_dict_never_raises(tmp_path, monkeypatch, sample_epis
     assert isinstance(result, dict)
     assert result["replay_id"] == replay_id
     assert result["model"] == "test-model"
-    assert "ran" in result
-    assert "dry_run" in result
+    assert result["executed"] is False
+    assert result["ran"] is False
+    assert result["scores"] is None
+    assert "plan" in result
+    assert not (tmp_path / "replays" / replay_id / "workspace").exists()
 
 
-def test_run_replay_dry_run_when_no_runner(tmp_path, monkeypatch, sample_episode):
+def test_run_replay_execute_dry_run_without_remote(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    sample_episode["repo_state"]["remote_url"] = None
     manifest = create_replay(sample_episode)
     replay_id = manifest["replay_id"]
 
-    result = run_replay(replay_id, "test-model")
+    result = run_replay(replay_id, "test-model", execute=True)
 
     assert isinstance(result, dict)
     assert result.get("dry_run") is True
@@ -82,14 +93,23 @@ def test_run_replay_missing_manifest_returns_error(tmp_path, monkeypatch):
     assert "error" in result
 
 
-def test_run_replay_never_raises_on_bad_remote(tmp_path, monkeypatch, sample_episode):
+def test_run_replay_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    result = run_replay("../../etc", "test-model", execute=True)
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "escapes" in result["error"]
+
+
+def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    sample_episode["repo_state"]["remote_url"] = str(tmp_path / "does-not-exist.git")
     manifest = create_replay(sample_episode)
     replay_id = manifest["replay_id"]
 
     try:
-        result = run_replay(replay_id, "test-model")
+        result = run_replay(replay_id, "test-model", execute=True)
     except Exception as exc:
         pytest.fail(f"run_replay raised unexpectedly: {exc}")
 

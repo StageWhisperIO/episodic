@@ -33,6 +33,10 @@ def split_episodes(good, holdout_frac, seed):
     return train, holdout
 
 
+def partition(episodes, min_composite, holdout_frac, seed):
+    return split_episodes(select_good(episodes, min_composite), holdout_frac, seed)
+
+
 def _mean(values):
     return sum(values) / len(values) if values else None
 
@@ -40,8 +44,8 @@ def _mean(values):
 def _eval_one(episode, candidate_model, base_model, runner_cmd, start):
     replay.create_replay(episode, start=start)
     replay_id = replay.replay_id_for(episode)
-    candidate = replay.run_replay(replay_id, candidate_model, start=start, runner_cmd=runner_cmd)
-    base = replay.run_replay(replay_id, base_model, start=start, runner_cmd=runner_cmd)
+    candidate = replay.run_replay(replay_id, candidate_model, start=start, runner_cmd=runner_cmd, execute=True)
+    base = replay.run_replay(replay_id, base_model, start=start, runner_cmd=runner_cmd, execute=True)
     return {
         "episode_id": episode["id"],
         "candidate": (candidate.get("scores") or {}).get("total"),
@@ -78,8 +82,7 @@ def run_loop(config, start=None):
     out = Path(config.get("out") or (paths.exports_dir(start) / "loop"))
     out.mkdir(parents=True, exist_ok=True)
 
-    good = list(select_good(store.iter_episodes(start), min_composite))
-    train, holdout = split_episodes(good, holdout_frac, seed)
+    train, holdout = partition(store.iter_episodes(start), min_composite, holdout_frac, seed)
 
     capped = len(holdout) > max_holdout
     holdout_eval = holdout[:max_holdout]

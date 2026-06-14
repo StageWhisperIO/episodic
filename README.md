@@ -202,7 +202,7 @@ type CodingEpisode = {
 | `episodic create-pr-notes` | suggested PR title + description |
 | `episodic export-episode --format <fmt> [--all]` | `sft` · `dpo` · `reward` · `rlds` · `parquet` · `jsonl` |
 | `episodic link [--pr URL \| --auto]` | attach PR / CI / merge / review outcome (uses `gh`) |
-| `episodic replay-task create \| run --replay ID --model M` | snapshot / re-run a task |
+| `episodic replay-task create \| run --replay ID --model M [--execute]` | snapshot / re-run a task (`run` only plans unless `--execute` clones + runs) |
 | `episodic list` / `show ID [--validate]` | browse episodes |
 | `episodic dashboard [--port N]` | local web UI: browse + one-click labels |
 | `episodic schema dump` | regenerate `schemas/episode.schema.json` |
