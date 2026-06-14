@@ -58,6 +58,11 @@ def _mean(values):
     return sum(values) / len(values) if values else None
 
 
+def _score(result):
+    total = (result.get("scores") or {}).get("total")
+    return total if _finite(total) else None
+
+
 def _eval_one(episode, candidate_model, base_model, runner_cmd, start):
     replay.create_replay(episode, start=start)
     replay_id = replay.replay_id_for(episode)
@@ -65,8 +70,8 @@ def _eval_one(episode, candidate_model, base_model, runner_cmd, start):
     base = replay.run_replay(replay_id, base_model, start=start, runner_cmd=runner_cmd, execute=True)
     return {
         "episode_id": episode["id"],
-        "candidate": (candidate.get("scores") or {}).get("total"),
-        "base": (base.get("scores") or {}).get("total"),
+        "candidate": _score(candidate),
+        "base": _score(base),
     }
 
 
@@ -157,8 +162,8 @@ def run_loop(config, start=None):
     manifest["evaluated"] = len(paired)
     if decision == "promote":
         (out / "promoted.json").write_text(
-            json.dumps({"model_dir": candidate_model, "candidate_mean": candidate_mean,
-                        "base_mean": base_mean, "decided_at": _now()}, indent=2),
+            json.dumps(_json_safe({"model_dir": candidate_model, "candidate_mean": candidate_mean,
+                                   "base_mean": base_mean, "decided_at": _now()}), indent=2),
             encoding="utf-8",
         )
     _write(out, manifest)
@@ -185,5 +190,15 @@ def _manifest(config, train, holdout, candidate_model, base_model, scores, decis
     return manifest
 
 
+def _json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _write(out, manifest):
-    (out / "loop.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (out / "loop.json").write_text(json.dumps(_json_safe(manifest), indent=2) + "\n", encoding="utf-8")

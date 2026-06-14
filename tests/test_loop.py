@@ -78,6 +78,14 @@ def test_composite_coerces_non_numeric():
     assert loop._composite({}) == 0.0
 
 
+def test_json_safe_strips_non_finite():
+    cleaned = loop._json_safe({"a": float("nan"), "b": [float("inf"), 1.0],
+                               "c": {"d": float("-inf")}})
+    assert cleaned == {"a": None, "b": [None, 1.0], "c": {"d": None}}
+    text = json.dumps(cleaned)
+    assert "NaN" not in text and "Infinity" not in text
+
+
 def test_finite_rejects_non_numeric_and_non_finite():
     assert loop._finite(0.5) and loop._finite(0) and loop._finite(-1.0)
     assert not loop._finite(None)
