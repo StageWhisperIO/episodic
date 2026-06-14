@@ -214,14 +214,18 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
 
     if remote_url:
         out, code = _run_cmd(["git", "clone", remote_url, str(workspace)], timeout=120)
-        if code == 0 and workspace.exists():
-            if base_commit:
-                _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
-                if checkout_rc != 0:
-                    shutil.rmtree(workspace, ignore_errors=True)
-                    return {"error": f"git checkout {base_commit!r} failed", "replay_id": replay_id,
-                            "model": model, "executed": True, "scores": None}
-            workspace_created = True
+        if code != 0 or not workspace.exists():
+            if workspace.exists() and not workspace.is_symlink():
+                shutil.rmtree(workspace, ignore_errors=True)
+            return {"error": f"git clone failed (rc={code})", "replay_id": replay_id,
+                    "model": model, "executed": True, "scores": None}
+        if base_commit:
+            _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
+            if checkout_rc != 0:
+                shutil.rmtree(workspace, ignore_errors=True)
+                return {"error": f"git checkout {base_commit!r} failed", "replay_id": replay_id,
+                        "model": model, "executed": True, "scores": None}
+        workspace_created = True
     elif repo:
         candidate = manifest.get("repo_root")
         if candidate and (Path(candidate) / ".git").exists():
@@ -247,11 +251,15 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
     runner_rc = None
 
     if runner_template and workspace_created:
-        cmd_str = runner_template.format(
-            model=shlex.quote(model),
-            prompt_file=shlex.quote(str(replay_dir / "prompt.txt")),
-            workspace=shlex.quote(str(workspace)),
-        )
+        try:
+            cmd_str = runner_template.format(
+                model=shlex.quote(model),
+                prompt_file=shlex.quote(str(replay_dir / "prompt.txt")),
+                workspace=shlex.quote(str(workspace)),
+            )
+        except (KeyError, IndexError, ValueError) as exc:
+            return {"error": f"invalid runner template: {exc}", "replay_id": replay_id,
+                    "model": model, "executed": True, "scores": None}
         runner_output, runner_rc = _run_cmd(cmd_str, cwd=str(workspace), timeout=300, shell=True)
         ran = True
     else:

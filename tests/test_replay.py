@@ -212,4 +212,25 @@ def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sa
         pytest.fail(f"run_replay raised unexpectedly: {exc}")
 
     assert isinstance(result, dict)
+    assert "error" in result
+    assert "clone failed" in result["error"]
     assert not (tmp_path / "replays" / replay_id / "workspace").exists()
+
+
+def test_run_replay_invalid_runner_template_returns_error(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    local = tmp_path / "repo3"
+    local.mkdir()
+    (local / ".git").mkdir()
+    (local / "mod.py").write_text("x = 1\n")
+    sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(local)
+    sample_episode["commands"] = []
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+
+    result = run_replay(replay_id, "m", execute=True, runner_cmd="echo {nope}")
+
+    assert "error" in result
+    assert "runner template" in result["error"]
