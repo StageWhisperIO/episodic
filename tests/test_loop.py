@@ -59,6 +59,25 @@ def test_split_is_deterministic_and_total():
     assert set(e["id"] for e in train_a).isdisjoint(e["id"] for e in holdout_a)
 
 
+def test_execute_flag_parsing():
+    assert loop._execute_flag(True) is True
+    assert loop._execute_flag(False) is False
+    assert loop._execute_flag("true") is True
+    assert loop._execute_flag("1") is True
+    assert loop._execute_flag("false") is False
+    assert loop._execute_flag("0") is False
+    assert loop._execute_flag("") is False
+    assert loop._execute_flag(None) is False
+    assert loop._execute_flag(1) is False
+
+
+def test_composite_coerces_non_numeric():
+    assert loop._composite({"reward_vector": {"composite": 0.7}}) == 0.7
+    assert loop._composite({"reward_vector": {"composite": "1.0"}}) == 0.0
+    assert loop._composite({"reward_vector": {"composite": None}}) == 0.0
+    assert loop._composite({}) == 0.0
+
+
 def test_finite_rejects_non_numeric_and_non_finite():
     assert loop._finite(0.5) and loop._finite(0) and loop._finite(-1.0)
     assert not loop._finite(None)
@@ -123,6 +142,22 @@ def test_loop_dry_run_trains_but_does_not_execute(tmp_path, monkeypatch):
     assert "train_manifest" in manifest
     assert set(manifest["holdout_ids"]) == set(holdout_ids)
     assert set(manifest["train_ids"]) == set(train_ids)
+
+
+def test_loop_string_false_execute_stays_dry_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    config = {"trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+              "min_composite": 0.0, "train_config": {"command": "true"},
+              "execute": "false", "out": str(tmp_path / "lo")}
+    manifest = loop.run_loop(config)
+
+    assert manifest["executed"] is False
+    assert manifest["decision"] == "dry_run"
 
 
 def test_loop_executes_evaluates_and_promotes(tmp_path, monkeypatch):

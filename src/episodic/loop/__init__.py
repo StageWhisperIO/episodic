@@ -12,7 +12,16 @@ SCHEMA_VERSION = "0.1.0"
 
 
 def _composite(episode):
-    return (episode.get("reward_vector") or {}).get("composite") or 0.0
+    value = (episode.get("reward_vector") or {}).get("composite")
+    return value if _finite(value) else 0.0
+
+
+def _execute_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return False
 
 
 def _hash_frac(episode_id, seed):
@@ -100,7 +109,7 @@ def run_loop(config, start=None):
     base_model = config.get("base_model", "base")
     train_config = config.get("train_config", {})
     runner_cmd = config.get("replay_cmd")
-    execute = bool(config.get("execute"))
+    execute = _execute_flag(config.get("execute"))
 
     out = Path(config.get("out") or (paths.exports_dir(start) / "loop"))
     out.mkdir(parents=True, exist_ok=True)
