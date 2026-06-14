@@ -16,7 +16,8 @@ def replay_id_for(episode):
     raw = episode["id"]
     suffix = raw.removeprefix("ep_")
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", suffix)
-    return "rp_" + (safe or "unknown")
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return "rp_" + (safe or "unknown") + "_" + digest
 
 
 def infer_test_command(repo_root, episode):
@@ -264,7 +265,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
         try:
             out, rc = _run_cmd(shlex.split(test_command), cwd=str(workspace), timeout=120)
             ts = now_iso()
-            tests_result = testdetect.detect_test_run(test_command, out, ts)
+            tests_result = testdetect.detect_test_run(test_command, out, ts, exit_code=rc)
         except Exception:
             pass
 
@@ -275,6 +276,9 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
             for line in diff_out.splitlines():
                 if line.startswith("+++ b/"):
                     produced_set.add(line[6:])
+            untracked, _ = _run_cmd(
+                ["git", "-C", str(workspace), "ls-files", "--others", "--exclude-standard"], timeout=30)
+            produced_set.update(line for line in untracked.splitlines() if line.strip())
             produced_files = list(produced_set)
             diff_overlap = _jaccard(produced_set, expected_files)
         except Exception:

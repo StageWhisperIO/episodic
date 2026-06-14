@@ -19,6 +19,13 @@ def test_replay_id_for_sanitizes_path_chars():
     assert ".." not in rid
 
 
+def test_replay_id_for_disambiguates_collisions():
+    a = replay_id_for({"id": "ep_a/b"})
+    b = replay_id_for({"id": "ep_a_b"})
+    assert a != b
+    assert "/" not in a and "/" not in b
+
+
 def test_create_replay_manifest_fields(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     manifest = create_replay(sample_episode)
@@ -152,12 +159,16 @@ def test_run_replay_local_repo_diff_scoring(tmp_path, monkeypatch, sample_episod
         "workspace = sys.argv[2]\n"
         "with open(os.path.join(workspace, 'mod.py'), 'a') as fh:\n"
         "    fh.write('y = 2\\n')\n"
+        "with open(os.path.join(workspace, 'new.py'), 'w') as fh:\n"
+        "    fh.write('z = 3\\n')\n"
     )
     sample_episode["repo_state"]["remote_url"] = None
     sample_episode["repo_state"]["root"] = str(local)
     sample_episode["commands"] = []
-    sample_episode["diffs"] = [{"file": "mod.py", "status": "modified",
-                               "additions": 1, "deletions": 0, "unified": None}]
+    sample_episode["diffs"] = [
+        {"file": "mod.py", "status": "modified", "additions": 1, "deletions": 0, "unified": None},
+        {"file": "new.py", "status": "added", "additions": 1, "deletions": 0, "unified": None},
+    ]
     manifest = create_replay(sample_episode)
     replay_id = manifest["replay_id"]
 
@@ -166,6 +177,7 @@ def test_run_replay_local_repo_diff_scoring(tmp_path, monkeypatch, sample_episod
 
     assert result["ran"] is True
     assert "mod.py" in result["produced_files"]
+    assert "new.py" in result["produced_files"]
     assert result["scores"]["diff_overlap"] == 1.0
 
 
