@@ -39,7 +39,8 @@ def quality_filter(episodes, min_composite=0.5):
             fb.get("label") == "wrong"
             for fb in (ep.get("human_feedback") or [])
         )
-        if composite >= min_composite and status not in bad_statuses and not has_wrong:
+        regressed = (ep.get("outcome") or {}).get("caused_regression")
+        if composite >= min_composite and status not in bad_statuses and not has_wrong and not regressed:
             kept.append(ep)
         else:
             dropped.append(ep)
@@ -93,7 +94,10 @@ def _is_bad_ep(ep):
     if _is_bad is not None:
         return _is_bad(ep)
     bad_statuses = {"failed", "reverted"}
-    if (ep.get("outcome") or {}).get("status") in bad_statuses:
+    outcome = ep.get("outcome") or {}
+    if outcome.get("status") in bad_statuses:
+        return True
+    if outcome.get("caused_regression"):
         return True
     return any(fb.get("label") == "wrong" for fb in (ep.get("human_feedback") or []))
 

@@ -65,6 +65,34 @@ def fetch_pr(arg, cwd):
         return None
 
 
+def should_refresh(outcome):
+    if not (outcome.get("pr_url") or outcome.get("pr_number")):
+        return False
+    if outcome.get("status") in {"abandoned", "reverted"}:
+        return False
+    return (
+        outcome.get("status") in {"open", "accepted", None}
+        or outcome.get("pr_state") in {"OPEN", None}
+        or outcome.get("ci_status") in {"pending", None}
+    )
+
+
+def refresh_outcome(episode, cwd=None):
+    outcome = episode.get("outcome") or {}
+    ref = outcome.get("pr_url") or outcome.get("pr_number")
+    if not ref or not gh_available():
+        return None
+    repo_state = episode.get("repo_state", {})
+    effective_cwd = cwd or repo_state.get("root") or "."
+    pr_json = fetch_pr(str(ref), effective_cwd)
+    if not pr_json:
+        return None
+    new_outcome = outcome_from_pr_json(pr_json, episode)
+    for key in ("reverted", "manual_edits_after_agent", "caused_regression", "regression_commits"):
+        new_outcome[key] = outcome.get(key, new_outcome[key])
+    return new_outcome
+
+
 def link_episode(episode, pr=None, auto=False, cwd=None):
     repo_state = episode.get("repo_state", {})
     effective_cwd = cwd or repo_state.get("root") or "."

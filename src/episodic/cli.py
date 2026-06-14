@@ -111,13 +111,84 @@ def cmd_export(args):
 def cmd_link(args):
     from . import github
 
+    if args.refresh_all:
+        return _refresh_all(args)
+
     episode = _resolve_episode(args)
-    outcome = github.link_episode(episode, pr=args.pr, auto=args.auto)
+    if args.refresh:
+        new_outcome = github.refresh_outcome(episode, cwd=args.cwd)
+        if not new_outcome:
+            _fail("cannot refresh: no linked PR on this episode or gh unavailable")
+        episode["outcome"] = new_outcome
+        service.update_episode(episode)
+        print(f"Refreshed {episode['id']} -> '{new_outcome['status']}'")
+        _print_json(new_outcome)
+        return 0
+
+    outcome = github.link_episode(episode, pr=args.pr, auto=args.auto, cwd=args.cwd)
     updated = service.set_outcome(outcome, session_id_for_episode(episode))
     target = updated or episode
     print(f"Linked {episode['id']} -> outcome '{outcome['status']}'")
     _print_json(outcome)
     return 0
+
+
+def _refresh_all(args):
+    from . import github
+
+    checked = 0
+    changed = 0
+    for episode in store.load_episodes():
+        outcome = episode.get("outcome") or {}
+        if not github.should_refresh(outcome):
+            continue
+        checked += 1
+        new_outcome = github.refresh_outcome(episode, cwd=args.cwd)
+        if new_outcome and new_outcome != outcome:
+            episode["outcome"] = new_outcome
+            service.update_episode(episode)
+            changed += 1
+            print(f"{episode['id']}: {outcome.get('status')} -> {new_outcome['status']} "
+                  f"(ci={new_outcome.get('ci_status')})")
+    print(f"refreshed {changed}/{checked} in-flight episode(s)")
+    return 0
+
+
+def cmd_regression(args):
+    from .github import regression as regression_mod
+
+    episodes = store.load_episodes()
+    report = regression_mod.regression_report(args.commit, args.cwd or ".", episodes)
+    if args.apply:
+        report["applied"] = _apply_regression(report, episodes, args.fuzzy)
+    _print_json(report)
+    return 0
+
+
+def _apply_regression(report, episodes, fuzzy):
+    by_id = {episode["id"]: episode for episode in episodes}
+    applied = []
+    for implication in report["implicated"]:
+        if implication["via"] == "file" and not fuzzy:
+            continue
+        episode = by_id.get(implication["episode_id"])
+        if not episode:
+            continue
+        outcome = episode.setdefault("outcome", {})
+        outcome["caused_regression"] = True
+        commits = set(outcome.get("regression_commits") or [])
+        commits.add(report["fix_commit"])
+        outcome["regression_commits"] = sorted(commits)
+        labels = episode.setdefault("labels", [])
+        if "regression" not in labels:
+            labels.append("regression")
+        service.update_episode(episode)
+        applied.append({
+            "episode_id": episode["id"],
+            "via": implication["via"],
+            "composite": episode["reward_vector"]["composite"],
+        })
+    return applied
 
 
 def session_id_for_episode(episode):
@@ -296,7 +367,18 @@ def build_parser():
     link.add_argument("--auto", action="store_true")
     link.add_argument("--episode")
     link.add_argument("--session")
+    link.add_argument("--cwd")
+    link.add_argument("--refresh", action="store_true", help="re-pull the linked PR for this episode")
+    link.add_argument("--refresh-all", dest="refresh_all", action="store_true",
+                      help="re-pull every in-flight linked PR (cron/watch friendly)")
     link.set_defaults(func=cmd_link)
+
+    regression = sub.add_parser("regression", help="blame a bugfix/revert commit back to the episodes that caused it")
+    regression.add_argument("commit")
+    regression.add_argument("--cwd")
+    regression.add_argument("--apply", action="store_true", help="mark culprit episodes caused_regression and recompute reward")
+    regression.add_argument("--fuzzy", action="store_true", help="also penalize file-overlap matches (lower precision)")
+    regression.set_defaults(func=cmd_regression)
 
     replay = sub.add_parser("replay-task", help="create or run a replayable task")
     replay.add_argument("replay_command", choices=["create", "run"])

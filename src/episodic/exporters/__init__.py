@@ -48,7 +48,10 @@ def is_good(ep):
 
 
 def is_bad(ep):
-    if ep.get("outcome", {}).get("status") in _BAD_STATUSES:
+    outcome = ep.get("outcome", {})
+    if outcome.get("status") in _BAD_STATUSES:
+        return True
+    if outcome.get("caused_regression"):
         return True
     for fb in ep.get("human_feedback", []):
         if fb.get("label") in _BAD_LABELS:

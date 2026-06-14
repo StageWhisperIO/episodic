@@ -1,7 +1,7 @@
 from . import store
 from .schema import new_event, now_iso
 from .core.episode import build_episode
-from .core import gitinfo
+from .core import gitinfo, reward
 
 
 def resolve_session_id(session_id=None, start=None):
@@ -59,6 +59,12 @@ def set_outcome(outcome, session_id=None, start=None):
     ensure_meta(session_id, start=start, outcome=outcome)
     store.append_event(new_event(session_id, "outcome", data=outcome), start)
     return finalize_session(session_id, start)
+
+
+def update_episode(episode, start=None):
+    episode["reward_vector"] = reward.reward_vector(episode)
+    store.save_episode(episode, start)
+    return episode
 
 
 def finalize_session(session_id=None, start=None):

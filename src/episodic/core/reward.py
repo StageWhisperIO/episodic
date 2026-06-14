@@ -47,7 +47,10 @@ def _human_label(episode):
 
 
 def _outcome(episode):
-    return OUTCOME_SCORES.get(episode["outcome"]["status"], 0.0)
+    score = OUTCOME_SCORES.get(episode["outcome"]["status"], 0.0)
+    if episode["outcome"].get("caused_regression"):
+        score = min(score, -1.0)
+    return score
 
 
 def _cost_efficiency(episode):

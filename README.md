@@ -96,6 +96,21 @@ instead of failing — separation of mechanism (Episodic) from policy (your trai
 > It produces datasets, a (linear) reward model, and RL transition batches; the LLM training
 > step is owned by the trainer plugin.
 
+### 5. Keep the outcome signal honest
+
+Outcomes evolve after you stop typing — CI finishes, the PR merges, and sometimes a change
+causes a bug weeks later. Two commands keep the reward label tracking reality:
+
+```bash
+episodic link --refresh-all                 # re-pull every in-flight PR (run from cron / a watch loop)
+episodic regression <bugfix-or-revert-sha>  # git-blame the fix back to the episodes that caused it
+episodic regression <sha> --apply           # mark them caused_regression and recompute reward
+```
+
+`regression` parses the fix's diff, blames the pre-image lines, and maps culprit commits to
+episodes (exact commit match; `--fuzzy` also penalizes file-overlap). A confirmed regression
+scores like a revert and is excluded from SFT / treated as `rejected` in DPO.
+
 ---
 
 ## Architecture

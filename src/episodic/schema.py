@@ -82,6 +82,8 @@ def default_outcome():
         "merged": False,
         "reverted": False,
         "manual_edits_after_agent": False,
+        "caused_regression": False,
+        "regression_commits": [],
         "linked_at": None,
     }
 
@@ -268,6 +270,8 @@ EPISODE_SCHEMA = {
                 "merged": {"type": "boolean"},
                 "reverted": {"type": "boolean"},
                 "manual_edits_after_agent": {"type": "boolean"},
+                "caused_regression": {"type": "boolean"},
+                "regression_commits": {"type": "array", "items": {"type": "string"}},
                 "linked_at": {"type": ["string", "null"]},
             },
         },

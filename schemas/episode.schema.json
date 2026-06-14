@@ -346,6 +346,15 @@
         "manual_edits_after_agent": {
           "type": "boolean"
         },
+        "caused_regression": {
+          "type": "boolean"
+        },
+        "regression_commits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "linked_at": {
           "type": [
             "string",
