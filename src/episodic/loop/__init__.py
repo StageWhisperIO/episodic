@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,8 @@ def _number(config, key, default, low=None, high=None, integer=False):
     value = config.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{key} must be a number, got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{key} must be finite, got {value!r}")
     if integer and int(value) != value:
         raise ValueError(f"{key} must be an integer, got {value!r}")
     if low is not None and value < low:
