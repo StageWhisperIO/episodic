@@ -318,6 +318,28 @@ def _load_train_config(arg):
         _fail(f"--config is neither a JSON file nor inline JSON: {arg}")
 
 
+def cmd_loop(args):
+    from . import loop, trainers
+
+    config = _load_train_config(args.config)
+    if args.out:
+        config["out"] = args.out
+    if args.trainer:
+        config["trainer"] = args.trainer
+    if args.format:
+        config["format"] = args.format
+    if args.execute:
+        config["execute"] = True
+
+    try:
+        manifest = loop.run_loop(config)
+    except trainers.TrainerUnavailable as exc:
+        print(f"episodic: {exc.hint}", file=sys.stderr)
+        return 0
+    _print_json(manifest)
+    return 0
+
+
 def cmd_dashboard(args):
     from .dashboard.server import serve
 
@@ -413,6 +435,15 @@ def build_parser():
     train.add_argument("--out")
     train.add_argument("--list", action="store_true")
     train.set_defaults(func=cmd_train)
+
+    loop = sub.add_parser("loop", help="closed RL loop: filter -> train -> replay-eval -> promote")
+    loop.add_argument("--config")
+    loop.add_argument("--trainer")
+    loop.add_argument("--format", choices=["sft", "dpo", "reward"])
+    loop.add_argument("--out")
+    loop.add_argument("--execute", action="store_true",
+                      help="actually run replay-eval (clones repos and runs recorded test commands)")
+    loop.set_defaults(func=cmd_loop)
 
     dashboard = sub.add_parser("dashboard", help="serve the local episode dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")

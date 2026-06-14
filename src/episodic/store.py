@@ -136,11 +136,13 @@ def list_episodes(start=None):
     return fallback
 
 
-def load_episodes(start=None):
+def iter_episodes(start=None):
     directory = paths.episodes_dir(start)
     if not directory.exists():
-        return []
-    episodes = []
+        return
     for child in sorted(directory.glob("*.json")):
-        episodes.append(json.loads(child.read_text(encoding="utf-8")))
-    return episodes
+        yield json.loads(child.read_text(encoding="utf-8"))
+
+
+def load_episodes(start=None):
+    return list(iter_episodes(start))

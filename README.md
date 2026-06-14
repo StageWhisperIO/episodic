@@ -111,8 +111,44 @@ episodic regression <sha> --apply           # mark them caused_regression and re
 ```
 
 `regression` parses the fix's diff, blames the pre-image lines, and maps culprit commits to
-episodes (exact commit match; `--fuzzy` also penalizes file-overlap). A confirmed regression
-scores like a revert and is excluded from SFT / treated as `rejected` in DPO.
+episodes (exact commit match, squash-merge aware; `--fuzzy` also penalizes file-overlap). A
+confirmed regression scores like a revert and is excluded from SFT / treated as `rejected` in DPO.
+
+### 6. Close the loop — `episodic loop`
+
+The loop turns "produces datasets" into "improves a model": quality-filter → train → **replay-eval
+on held-out tasks** → compare reward vs base → promote. It composes the same pluggable pieces —
+exporters, the trainer registry, and the replay harness.
+
+```bash
+episodic loop --config loop.json                 # plan only (no code is executed)
+episodic loop --config loop.json --execute       # run replay-eval and decide promotion
+```
+
+```jsonc
+// loop.json
+{
+  "trainer": "trl-grpo",        // any registered backend; grpo is reward-model-driven RL
+  "format": "sft",
+  "train_config": {"model": "Qwen/Qwen2.5-0.5B-Instruct", "reward_model": "runs/rm"},
+  "base_model": "runs/base",
+  "holdout_frac": 0.2, "seed": 0,
+  "replay_cmd": "my-agent --model {model} --task {prompt_file} --repo {workspace}",
+  "promote_margin": 0.02, "eval_concurrency": 4, "execute": true
+}
+```
+
+**The RL chain** is three pluggable trainers: `trl-sft` (warmup) → `trl-reward` (reward model from
+preference pairs) → `trl-grpo` (policy RL driven by that reward model). The loop's promotion decision
+uses **real replay-eval reward** (it runs the model on held-out tasks and scores tests + diff
+overlap), not a proxy.
+
+> **Security:** the loop only clones repos and runs recorded test commands under `--execute` /
+> `"execute": true` — otherwise it just prints the plan. Untrusted episode-derived test commands run
+> without a shell; only your own `replay_cmd` template runs via a shell.
+>
+> **Closing the loop** (the model actually *runs* in the agent) is the open-model lane —
+> Codex `--oss` or a custom agent pointed at the tuned model dir — not hosted Claude Code.
 
 ---
 

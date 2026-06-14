@@ -18,9 +18,12 @@ def _write_sft(path):
 
 def test_builtin_trainers_registered():
     names = trainers.available()
-    assert {"command", "trl-sft", "trl-dpo", "unsloth-sft", "unsloth-dpo"}.issubset(set(names))
+    expected = {"command", "trl-sft", "trl-dpo", "trl-reward", "trl-grpo", "unsloth-sft", "unsloth-dpo"}
+    assert expected.issubset(set(names))
     assert trainers.get("trl-sft").consumes == ("sft",)
     assert trainers.get("trl-dpo").consumes == ("dpo",)
+    assert trainers.get("trl-reward").consumes == ("dpo",)
+    assert trainers.get("trl-grpo").consumes == ("sft",)
     assert trainers.get("unsloth-sft").consumes == ("sft",)
     assert trainers.get("unsloth-dpo").consumes == ("dpo",)
 

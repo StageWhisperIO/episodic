@@ -104,5 +104,110 @@ class TRLDPOTrainer:
         }
 
 
+def _prompt_from_messages(messages):
+    for message in messages:
+        if message.get("role") == "user":
+            return message.get("content", "")
+    return messages[0].get("content", "") if messages else ""
+
+
+def _resolve_reward_funcs(config):
+    import importlib
+
+    funcs = []
+    for ref in config.get("reward_funcs", []):
+        module_name, _, attr = ref.partition(":")
+        funcs.append(getattr(importlib.import_module(module_name), attr))
+    if config.get("reward_model"):
+        funcs.append(config["reward_model"])
+    if not funcs:
+        raise ValueError(
+            "trl-grpo requires config.reward_model (path to a trl-reward model) "
+            "or config.reward_funcs (list of 'module:attr' callables)"
+        )
+    return funcs
+
+
+class TRLRewardTrainer:
+    name = "trl-reward"
+    consumes = ("dpo",)
+    version = "1"
+
+    def train(self, dataset_path, out_dir, config):
+        _require_trl()
+        from datasets import Dataset
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        from trl import RewardConfig, RewardTrainer
+
+        model_name = config.get("model", DEFAULT_MODEL)
+        rows = _read_rows(dataset_path)
+        dataset = Dataset.from_list([
+            {"chosen": row["chosen"], "rejected": row["rejected"]} for row in rows
+        ])
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1)
+
+        args = RewardConfig(output_dir=out_dir, **_training_kwargs(config))
+        trainer = RewardTrainer(model=model, args=args, train_dataset=dataset, processing_class=tokenizer)
+        outcome = trainer.train()
+        trainer.save_model(out_dir)
+        tokenizer.save_pretrained(out_dir)
+        return {
+            "model_dir": out_dir,
+            "base_model": model_name,
+            "pairs": len(rows),
+            "steps": int(outcome.global_step),
+            "train_loss": float(outcome.training_loss),
+        }
+
+
+class TRLGRPOTrainer:
+    name = "trl-grpo"
+    consumes = ("sft",)
+    version = "1"
+
+    def train(self, dataset_path, out_dir, config):
+        _require_trl()
+        from datasets import Dataset
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from trl import GRPOConfig, GRPOTrainer
+
+        model_name = config.get("model", DEFAULT_MODEL)
+        rows = _read_rows(dataset_path)
+        dataset = Dataset.from_list([{"prompt": _prompt_from_messages(row["messages"])} for row in rows])
+        reward_funcs = _resolve_reward_funcs(config)
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+
+        args = GRPOConfig(
+            output_dir=out_dir,
+            num_generations=config.get("num_generations", 4),
+            **_training_kwargs(config),
+        )
+        trainer = GRPOTrainer(
+            model=model, args=args, train_dataset=dataset,
+            reward_funcs=reward_funcs, processing_class=tokenizer,
+        )
+        outcome = trainer.train()
+        trainer.save_model(out_dir)
+        tokenizer.save_pretrained(out_dir)
+        return {
+            "model_dir": out_dir,
+            "base_model": model_name,
+            "prompts": len(rows),
+            "num_generations": args.num_generations,
+            "steps": int(outcome.global_step),
+            "train_loss": float(outcome.training_loss),
+        }
+
+
 register(TRLSFTTrainer())
 register(TRLDPOTrainer())
+register(TRLRewardTrainer())
+register(TRLGRPOTrainer())

@@ -113,7 +113,7 @@ def create_replay(episode, start=None):
     return manifest
 
 
-def _run_cmd(args, cwd=None, timeout=60):
+def _run_cmd(args, cwd=None, timeout=60, shell=False):
     try:
         result = subprocess.run(
             args,
@@ -121,6 +121,7 @@ def _run_cmd(args, cwd=None, timeout=60):
             capture_output=True,
             text=True,
             timeout=timeout,
+            shell=shell,
         )
         return result.stdout + result.stderr, result.returncode
     except Exception:
@@ -136,7 +137,7 @@ def _jaccard(set_a, set_b):
     return len(set_a & set_b) / len(union)
 
 
-def run_replay(replay_id, model, start=None):
+def run_replay(replay_id, model, start=None, runner_cmd=None):
     replay_dir = paths.replays_dir(start) / replay_id
     manifest_path = replay_dir / "manifest.json"
 
@@ -153,6 +154,8 @@ def run_replay(replay_id, model, start=None):
 
     workspace = replay_dir / "workspace"
     workspace_created = False
+    if workspace.exists():
+        shutil.rmtree(workspace, ignore_errors=True)
 
     if remote_url:
         out, code = _run_cmd(["git", "clone", remote_url, str(workspace)], timeout=120)
@@ -173,7 +176,7 @@ def run_replay(replay_id, model, start=None):
             except Exception:
                 pass
 
-    runner_template = os.environ.get("EPISODIC_REPLAY_CMD")
+    runner_template = runner_cmd or os.environ.get("EPISODIC_REPLAY_CMD")
     ran = False
     dry_run = False
     runner_output = None
@@ -185,7 +188,7 @@ def run_replay(replay_id, model, start=None):
             prompt_file=str(replay_dir / "prompt.txt"),
             workspace=str(workspace),
         )
-        runner_output, runner_rc = _run_cmd(cmd_str, cwd=str(workspace), timeout=300)
+        runner_output, runner_rc = _run_cmd(cmd_str, cwd=str(workspace), timeout=300, shell=True)
         ran = True
     else:
         dry_run = True
