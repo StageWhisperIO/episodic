@@ -52,3 +52,17 @@ def test_map_to_episodes_commit_and_file(tmp_path):
     assert by_id["ep_exact"]["blamed_lines"] >= 1
     assert by_id["ep_file"]["via"] == "file"
     assert "ep_other" not in by_id
+
+
+def test_map_to_episodes_squash_merge(tmp_path):
+    repo, bug_commit, fix_commit = _repo_with_regression(tmp_path)
+    episodes = [
+        {"id": "ep_squash",
+         "outcome": {"commit": "0" * 40, "merge_commit": bug_commit},
+         "diffs": [{"file": "f.py"}]},
+    ]
+    report = regression.regression_report(fix_commit, repo, episodes)
+    implication = report["implicated"][0]
+    assert implication["episode_id"] == "ep_squash"
+    assert implication["via"] == "commit"
+    assert implication["commit"] == bug_commit

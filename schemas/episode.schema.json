@@ -346,6 +346,12 @@
         "manual_edits_after_agent": {
           "type": "boolean"
         },
+        "merge_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "caused_regression": {
           "type": "boolean"
         },

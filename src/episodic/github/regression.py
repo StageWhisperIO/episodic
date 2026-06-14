@@ -69,9 +69,10 @@ def _episode_files(episode):
 def map_to_episodes(culprits, regressed_files, episodes):
     by_commit = {}
     for episode in episodes:
-        commit = (episode.get("outcome") or {}).get("commit")
-        if commit:
-            by_commit.setdefault(commit, episode)
+        outcome = episode.get("outcome") or {}
+        for commit in (outcome.get("commit"), outcome.get("merge_commit")):
+            if commit:
+                by_commit.setdefault(commit, episode)
 
     implications = []
     matched_ids = set()

@@ -41,6 +41,7 @@ def outcome_from_pr_json(pr_json, episode):
     outcome["pr_state"] = state
     outcome["branch"] = pr_json.get("headRefName") or repo_state.get("branch")
     outcome["commit"] = pr_json.get("headRefOid") or repo_state.get("base_commit")
+    outcome["merge_commit"] = (pr_json.get("mergeCommit") or {}).get("oid")
     outcome["ci_status"] = _aggregate_ci(pr_json.get("statusCheckRollup") or [])
     outcome["review_decision"] = pr_json.get("reviewDecision")
     outcome["linked_at"] = now_iso()
@@ -51,7 +52,7 @@ def outcome_from_pr_json(pr_json, episode):
 
 
 def fetch_pr(arg, cwd):
-    fields = "state,mergedAt,merged,number,url,headRefName,headRefOid,statusCheckRollup,reviewDecision"
+    fields = "state,mergedAt,merged,number,url,headRefName,headRefOid,mergeCommit,statusCheckRollup,reviewDecision"
     cmd = ["gh", "pr", "view"]
     if arg:
         cmd.append(arg)

@@ -17,6 +17,7 @@ dependencies = []
 datasets = ["pyarrow>=14", "datasets>=2.14"]
 rl = ["numpy>=1.24"]
 trl = ["trl>=0.12", "transformers>=4.44", "datasets>=2.14", "torch>=2.2", "accelerate>=0.30"]
+unsloth = ["unsloth", "trl>=0.12", "datasets>=2.14"]
 otel = []
 dev = ["pytest>=7"]
 

@@ -18,9 +18,11 @@ def _write_sft(path):
 
 def test_builtin_trainers_registered():
     names = trainers.available()
-    assert {"command", "trl-sft", "trl-dpo"}.issubset(set(names))
+    assert {"command", "trl-sft", "trl-dpo", "unsloth-sft", "unsloth-dpo"}.issubset(set(names))
     assert trainers.get("trl-sft").consumes == ("sft",)
     assert trainers.get("trl-dpo").consumes == ("dpo",)
+    assert trainers.get("unsloth-sft").consumes == ("sft",)
+    assert trainers.get("unsloth-dpo").consumes == ("dpo",)
 
 
 def test_unknown_trainer_raises():
@@ -73,3 +75,16 @@ def test_trl_unavailable_is_graceful(tmp_path):
     with pytest.raises(trainers.TrainerUnavailable) as info:
         trainers.train("trl-sft", str(dataset), str(tmp_path / "out"), {}, cwd=str(tmp_path))
     assert "episodic[trl]" in info.value.hint
+
+
+def test_unsloth_unavailable_is_graceful(tmp_path):
+    try:
+        import unsloth  # noqa: F401
+        pytest.skip("unsloth installed; unavailable path not exercised")
+    except ImportError:
+        pass
+    dataset = tmp_path / "sft.jsonl"
+    _write_sft(dataset)
+    with pytest.raises(trainers.TrainerUnavailable) as info:
+        trainers.train("unsloth-sft", str(dataset), str(tmp_path / "out"), {}, cwd=str(tmp_path))
+    assert "episodic[unsloth]" in info.value.hint
