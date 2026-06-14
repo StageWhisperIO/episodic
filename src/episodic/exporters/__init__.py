@@ -27,7 +27,9 @@ def trajectory_text(ep):
             tool = step.get("tool") or step.get("type") or "unknown"
             raw_input = step.get("input") or {}
             compact = json.dumps(raw_input, ensure_ascii=False)[:120]
-            parts.append(f"ACTION {tool}({compact})")
+            cwd = step.get("cwd")
+            location = f" @ {cwd}" if cwd else ""
+            parts.append(f"ACTION {tool}({compact}){location}")
         obs = (step.get("observation") or "")[:200]
         parts.append(f"OBS: {obs}")
     return "\n".join(parts)
@@ -159,6 +161,7 @@ def _export_rlds(episodes, out_dir):
                     "tool": step.get("tool"),
                     "input": step.get("input"),
                     "type": step.get("type"),
+                    "cwd": step.get("cwd"),
                 },
                 "reward": composite if is_last else 0.0,
                 "is_first": i == 0,

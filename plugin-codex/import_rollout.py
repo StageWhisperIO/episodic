@@ -150,6 +150,7 @@ def import_rollout(path, session_id=None, cwd=None):
 
     from episodic import store
     meta = store.read_meta(session_id, cwd)
+    meta["imported"] = True
     repo_state = meta.get("repo_state") or {}
     if git.get("commit_hash"):
         repo_state["base_commit"] = git["commit_hash"]

@@ -189,6 +189,7 @@ EPISODE_SCHEMA = {
                     "input": {"type": "object"},
                     "observation": {"type": "string"},
                     "approved": {"type": ["boolean", "null"]},
+                    "cwd": {"type": ["string", "null"]},
                     "duration_ms": {"type": ["integer", "null"]},
                 },
             },

@@ -68,6 +68,7 @@ def _build_steps(events):
             "input": data.get("tool_input") or _prompt_input(event),
             "observation": _observation(event),
             "approved": data.get("approved"),
+            "cwd": data.get("cwd"),
             "duration_ms": None,
         })
     return steps
@@ -135,17 +136,16 @@ def _event_diffs(repo_state, cwd, events):
     ]
 
 
-def _build_diffs(repo_state, cwd, events):
+def _build_diffs(repo_state, cwd, events, live=True):
     root = repo_state.get("root")
     base_commit = repo_state.get("base_commit")
-    if root and base_commit and gitinfo.git_available(root):
-        if gitinfo.head_commit(root) == base_commit:
-            parsed = diffparse.parse_unified_diff(gitinfo.working_diff(root, base_commit))
-            if parsed:
-                return parsed, "git-working-tree"
-            return _event_diffs(repo_state, cwd, events), "events"
-        return _event_diffs(repo_state, cwd, events), "events-untrusted"
-    return _event_diffs(repo_state, cwd, events), "events"
+    git_ok = bool(root and base_commit and gitinfo.git_available(root))
+    if live and git_ok and gitinfo.head_commit(root) == base_commit:
+        parsed = diffparse.parse_unified_diff(gitinfo.working_diff(root, base_commit))
+        if parsed:
+            return parsed, "git-working-tree"
+        return _event_diffs(repo_state, cwd, events), "events"
+    return _event_diffs(repo_state, cwd, events), "events-untrusted" if git_ok else "events"
 
 
 def _build_stats(events, meta):
@@ -222,7 +222,9 @@ def build_episode(session):
     episode["steps"] = _build_steps(events)
     episode["commands"] = _build_commands(events)
     episode["tests"] = _build_tests(events)
-    episode["diffs"], episode["diff_source"] = _build_diffs(repo_state, cwd, events)
+    episode["diffs"], episode["diff_source"] = _build_diffs(
+        repo_state, cwd, events, live=not meta.get("imported")
+    )
     episode["human_feedback"] = meta.get("human_feedback", [])
     episode["outcome"] = meta.get("outcome") or episode["outcome"]
     episode["stats"] = _build_stats(events, meta)

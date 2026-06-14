@@ -54,7 +54,9 @@ def trajectory_text(ep):
         tool = step.get("tool") or step.get("type") or "unknown"
         raw_input = step.get("input") or {}
         compact = json.dumps(raw_input, ensure_ascii=False)[:120]
-        parts.append(f"ACTION {tool}({compact})")
+        cwd = step.get("cwd")
+        location = f" @ {cwd}" if cwd else ""
+        parts.append(f"ACTION {tool}({compact}){location}")
         obs = (step.get("observation") or "")[:200]
         parts.append(f"OBS: {obs}")
     return "\n".join(parts)
@@ -262,6 +264,7 @@ def rl_batches(episodes):
                     "type": step.get("type"),
                     "tool": step.get("tool"),
                     "input": step.get("input"),
+                    "cwd": step.get("cwd"),
                 },
                 "observation": step.get("observation", ""),
                 "reward": composite if is_terminal else 0.0,
