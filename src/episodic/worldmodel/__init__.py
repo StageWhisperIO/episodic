@@ -57,6 +57,7 @@ def expand_turns(episode):
         observation = step.get("observation") or ""
         if not observation.strip():
             continue
+        prev = steps[index - 1].get("observation") or "" if index > 0 else ""
         samples.append({
             "episode_id": episode["id"],
             "turn_index": index,
@@ -65,6 +66,7 @@ def expand_turns(episode):
             "intent": episode.get("intent", ""),
             "history": render_history(episode, index),
             "action": _action_repr(step),
+            "prev_observation": prev,
             "target_observation": observation,
         })
     return samples

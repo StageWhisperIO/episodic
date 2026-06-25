@@ -342,6 +342,51 @@ def cmd_loop(args):
     return 0
 
 
+def cmd_worldbench(args):
+    from . import worldbench
+
+    episodes = store.load_episodes()
+    if not episodes:
+        _fail("no episodes to benchmark")
+    if args.cmd:
+        if not args.execute:
+            _fail("--cmd runs a shell command per turn; pass --execute to allow it")
+        predictor = worldbench.command_predictor(args.cmd)
+    else:
+        predictor = args.predictor
+
+    report = worldbench.run_bench(
+        episodes, predictor,
+        one_per_trajectory=not args.all_turns,
+        seed=args.seed,
+        source_holdout=args.source_holdout,
+    )
+    if args.turing:
+        report["turing"] = worldbench.turing_test(
+            episodes, predictor, one_per_trajectory=not args.all_turns, seed=args.seed)
+    _print_json(report)
+    return 0
+
+
+def cmd_doctor(args):
+    from . import selfcheck
+
+    report = selfcheck.run_checks()
+    if args.json:
+        _print_json(report)
+        return 0 if report["ok"] else 1
+    symbol = {True: "ok  ", False: "FAIL", None: "skip"}
+    for check in report["checks"]:
+        detail = check["detail"]
+        detail = json.dumps(detail) if isinstance(detail, dict) else detail
+        print(f"[{symbol[check['ok']]}] {check['name']:<18} {detail}")
+    if report["ok"]:
+        print(f"\n{report['passed']}/{report['total']} checks ok — install is healthy")
+    else:
+        print(f"\n{report['passed']}/{report['total']} checks ok — FAILED: {', '.join(report['failed'])}")
+    return 0 if report["ok"] else 1
+
+
 def cmd_dashboard(args):
     from .dashboard.server import serve
 
@@ -450,6 +495,23 @@ def build_parser():
     loop.add_argument("--execute", action="store_true",
                       help="actually run replay-eval (clones repos and runs recorded test commands)")
     loop.set_defaults(func=cmd_loop)
+
+    worldbench = sub.add_parser("worldbench", help="evaluate next-observation prediction (world-model fidelity)")
+    worldbench.add_argument("--predictor", default="prefix", choices=["prefix", "oracle", "empty", "echo"])
+    worldbench.add_argument("--cmd", help="shell template to run a model predictor; receives {prompt_file}")
+    worldbench.add_argument("--execute", action="store_true", help="allow --cmd to run shell commands")
+    worldbench.add_argument("--all-turns", dest="all_turns", action="store_true",
+                            help="score every turn (default: one per trajectory, the Echo-Trap-safe pool)")
+    worldbench.add_argument("--source-holdout", dest="source_holdout", action="store_true",
+                            help="evaluate only held-out data sources (OOD generalization)")
+    worldbench.add_argument("--seed", type=int, default=0)
+    worldbench.add_argument("--turing", action="store_true",
+                            help="also run the double-blind Turing-test discriminator")
+    worldbench.set_defaults(func=cmd_worldbench)
+
+    doctor = sub.add_parser("doctor", help="run end-to-end self-checks on the install")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=cmd_doctor)
 
     dashboard = sub.add_parser("dashboard", help="serve the local episode dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")
