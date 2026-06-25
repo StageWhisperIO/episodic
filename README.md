@@ -150,6 +150,28 @@ overlap), not a proxy.
 > **Closing the loop** (the model actually *runs* in the agent) is the open-model lane —
 > Codex `--oss` or a custom agent pointed at the tuned model dir — not hosted Claude Code.
 
+### 7. Verify & explore — testing tools + tutorials
+
+A self-contained testing layer lets you validate the install, generate realistic episodes
+without a coding agent, and benchmark how faithfully a model predicts environment
+observations — all offline, no GPU.
+
+```bash
+episodic doctor                              # end-to-end self-check (synthetic store, no network)
+episodic worldbench --predictor prefix --turing   # next-observation fidelity + double-blind judge
+pip install -e ".[tutorials]" && jupyter lab notebooks/   # five runnable tutorials
+```
+
+- **`episodic doctor`** runs every subsystem against a throwaway store and prints one verdict.
+- **`episodic.testing`** is a deterministic, schema-valid episode factory (`make_episode`,
+  `make_population`, `populate_store`) — the basis for tests and notebooks.
+- **`episodic.fidelity` + `episodic worldbench`** implement the AgentWorld content-type-aware
+  observation rubric, OOD source splits, and a Turing-test judge.
+- **[notebooks/](notebooks/)** — five publishable tutorials, generated reproducibly from
+  `notebooks/build.py` and executed headless in CI.
+
+Full guide: [`docs/TESTING.md`](docs/TESTING.md) · tutorial index: [`notebooks/README.md`](notebooks/README.md).
+
 ---
 
 ## Architecture
@@ -167,7 +189,8 @@ Claude Code / Codex  ──hooks──►  episodic ingest
    ▼              ▼                   ▼                   ▼                 ▼
  summaries     github-linker     dataset-exporters    replay-runner     rl-pipeline
  + PR notes    (PR/CI/merge)     (sft/dpo/reward/      (snapshot +       (filter→sft→pref→
- (no ML)       → outcome label    rlds/parquet/jsonl)   re-run model)     reward→rl→eval)
+ (no ML)       → outcome label    rlds/wm/parquet/      re-run model)     reward→rl→eval)
+                                  jsonl)
                                                                   dashboard (browse + label)
 ```
 
@@ -200,9 +223,11 @@ type CodingEpisode = {
 | `episodic summary [--episode ID] [--json]` | what changed, why, tests, missing tests, risky edits, PR notes, follow-ups |
 | `episodic mark <label>` | feedback: `useful`, `wrong`, `too_broad`, `too_slow`, `needed_human_rescue`, `accepted_as_is`, `accepted_after_edits` |
 | `episodic create-pr-notes` | suggested PR title + description |
-| `episodic export-episode --format <fmt> [--all]` | `sft` · `dpo` · `reward` · `rlds` · `parquet` · `jsonl` |
+| `episodic export-episode --format <fmt> [--all]` | `sft` · `dpo` · `reward` · `rlds` · `wm` · `parquet` · `jsonl` |
 | `episodic link [--pr URL \| --auto]` | attach PR / CI / merge / review outcome (uses `gh`) |
 | `episodic replay-task create \| run --replay ID --model M [--execute]` | snapshot / re-run a task (`run` only plans unless `--execute` clones + runs) |
+| `episodic worldbench [--predictor P] [--source-holdout] [--turing]` | benchmark next-observation prediction (world-model fidelity) |
+| `episodic doctor [--json]` | end-to-end self-check on the install (synthetic store, no network) |
 | `episodic list` / `show ID [--validate]` | browse episodes |
 | `episodic dashboard [--port N]` | local web UI: browse + one-click labels |
 | `episodic schema dump` | regenerate `schemas/episode.schema.json` |
@@ -215,6 +240,7 @@ type CodingEpisode = {
 - **DPO** — `chosen > rejected` preference pairs grouped by intent
 - **Reward** — `trajectory → reward_vector` (+ scalar composite)
 - **RLDS** — per-episode `observation / action / reward / is_terminal / discount` steps
+- **WM** — language-world-model samples: `history + action → next observation` as SFT messages
 - **Parquet** — flattened analytics rows (falls back to JSONL without `pyarrow`)
 - **JSONL** — full episodes, one per line
 
@@ -247,6 +273,9 @@ Maps the conceptual components (initial prompt §11) to the Python package:
 | replay-runner | [`replay-runner/`](replay-runner/) → `src/episodic/replay/` |
 | dashboard | [`dashboard/`](dashboard/) → `src/episodic/dashboard/` |
 | rl-pipeline | [`rl-pipeline/`](rl-pipeline/) |
+| world model | `src/episodic/worldmodel/`, `fidelity/`, `worldbench/` (AgentWorld next-observation prediction) |
+| testing tools | `src/episodic/testing/` (episode factory), `selfcheck/` (`episodic doctor`) |
+| tutorials | [`notebooks/`](notebooks/) + [`docs/TESTING.md`](docs/TESTING.md) |
 
 ## Privacy
 
@@ -256,9 +285,11 @@ local-first. `link` talks to GitHub only when you ask; exporters write files onl
 ## Development
 
 ```bash
-PYTHONPATH=src python -m pytest tests -q     # 27 tests
+PYTHONPATH=src python -m pytest tests -q     # 112 tests
 python plugin-codex/test_codex.py            # codex mapping
 python rl-pipeline/test_pipeline.py          # pipeline stages
+episodic doctor                              # end-to-end install self-check
+python notebooks/build.py                    # regenerate the tutorial notebooks
 ```
 
 ## Status
