@@ -4,7 +4,7 @@ from episodic import exporters
 
 
 def test_formats_constant():
-    assert set(exporters.FORMATS) == {"sft", "dpo", "reward", "rlds", "jsonl", "parquet"}
+    assert set(exporters.FORMATS) == {"sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet"}
 
 
 def test_unknown_format_raises(episodes, tmp_path):

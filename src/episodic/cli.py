@@ -379,7 +379,7 @@ def build_parser():
     pr_notes.set_defaults(func=cmd_pr_notes)
 
     export = sub.add_parser("export-episode", help="export episodes to a dataset format")
-    export.add_argument("--format", default="jsonl", choices=["sft", "dpo", "reward", "rlds", "jsonl", "parquet"])
+    export.add_argument("--format", default="jsonl", choices=["sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet"])
     export.add_argument("--episode")
     export.add_argument("--session")
     export.add_argument("--all", action="store_true")

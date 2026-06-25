@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-FORMATS = ("sft", "dpo", "reward", "rlds", "jsonl", "parquet")
+FORMATS = ("sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet")
 
 _GOOD_LABELS = {"useful", "accepted_as_is", "accepted_after_edits"}
 _BAD_LABELS = {"wrong"}
@@ -179,6 +179,15 @@ def _export_rlds(episodes, out_dir):
     return {"files": [str(path)], "count": len(rows)}
 
 
+def _export_wm(episodes, out_dir):
+    from episodic.worldmodel import wm_samples, to_messages
+
+    rows = [to_messages(sample) for sample in wm_samples(episodes)]
+    path = out_dir / "wm.jsonl"
+    write_jsonl(path, rows)
+    return {"files": [str(path)], "count": len(rows), "turns": len(rows)}
+
+
 def _flatten_row(ep):
     rv = ep.get("reward_vector") or {}
     stats = ep.get("stats") or {}
@@ -231,6 +240,7 @@ _EXPORTERS = {
     "dpo": _export_dpo,
     "reward": _export_reward,
     "rlds": _export_rlds,
+    "wm": _export_wm,
     "parquet": _export_parquet,
 }
 
