@@ -1,5 +1,16 @@
 import re
 
+_NON_TEST_PROGRAMS = frozenset({
+    "cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag",
+    "sed", "awk", "cut", "sort", "uniq", "wc", "ls", "find", "fd", "echo", "printf",
+    "tee", "tr", "xxd", "hexdump", "vim", "vi", "nano", "emacs", "touch", "rm", "cp",
+    "mv", "mkdir", "diff", "cd", "export", "git",
+})
+
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+_SEGMENT_SPLIT = re.compile(r"\|\||&&|[;\n|]")
+_ENV_ASSIGN = re.compile(r"^\w+=")
+
 TEST_COMMAND_PATTERNS = (
     ("pytest", re.compile(r"\bpytest\b|\bpy\.test\b")),
     ("python-unittest", re.compile(r"python[0-9.]*\s+-m\s+unittest")),
@@ -79,10 +90,25 @@ def _generic(output):
     }
 
 
+def _segment_program(segment):
+    for token in segment.split():
+        if _ENV_ASSIGN.match(token):
+            continue
+        return token.rsplit("/", 1)[-1]
+    return None
+
+
 def classify_command(command):
-    for framework, pattern in TEST_COMMAND_PATTERNS:
-        if pattern.search(command):
-            return framework
+    if not command:
+        return None
+    stripped = _QUOTED.sub(" ", command)
+    for segment in _SEGMENT_SPLIT.split(stripped):
+        segment = segment.strip()
+        if not segment or _segment_program(segment) in _NON_TEST_PROGRAMS:
+            continue
+        for framework, pattern in TEST_COMMAND_PATTERNS:
+            if pattern.search(segment):
+                return framework
     return None
 
 

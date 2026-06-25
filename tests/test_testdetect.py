@@ -1,4 +1,35 @@
-from episodic.core.testdetect import detect_test_run
+from episodic.core.testdetect import classify_command, detect_test_run
+
+
+def test_grep_pattern_mentioning_pytest_is_not_a_test_run():
+    command = (
+        'cd web/backend 2>/dev/null; sed -n \'1,80p\' tests/api/routes/test_pricing.py '
+        '| grep -nE "pytest|test|def test|assert" | head -40; '
+        'grep -nE "pytest|test|sqlite" Makefile 2>/dev/null | head; ls Makefile pyproject.toml'
+    )
+    assert classify_command(command) is None
+    assert detect_test_run(command, "", "ts") is None
+
+
+def test_reading_pytest_config_is_not_a_test_run():
+    assert classify_command("cat pytest.ini") is None
+    assert classify_command("ls tests/") is None
+    assert classify_command('echo "running pytest"') is None
+
+
+def test_real_pytest_invocations_still_classify():
+    assert classify_command("pytest -q") == "pytest"
+    assert classify_command("python3 -m pytest -q") == "pytest"
+    assert classify_command("PYTHONPATH=. pytest tests/") == "pytest"
+    assert classify_command("uv run --index-url x pytest -q") == "pytest"
+    assert classify_command("cargo test") == "cargo-test"
+    assert classify_command("npm run test:unit") == "npm-test"
+    assert classify_command("cd web && make test") == "make-test"
+
+
+def test_real_test_after_pipe_or_exploration_still_classifies():
+    assert classify_command('echo "starting"; pytest -q') == "pytest"
+    assert classify_command("cat input.txt | pytest -") == "pytest"
 
 
 def test_passing_no_exit_code():
