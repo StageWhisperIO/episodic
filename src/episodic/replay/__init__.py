@@ -162,6 +162,17 @@ def _init_git_baseline(workspace):
               "commit", "-q", "-m", "replay base"], timeout=30)
 
 
+_NOISE_DIRS = ("__pycache__/", ".git/", ".pytest_cache/", "node_modules/", ".mypy_cache/",
+               ".ruff_cache/", ".tox/", ".venv/")
+_NOISE_SUFFIXES = (".pyc", ".pyo", ".pyd", ".class", ".o")
+
+
+def _is_noise(path):
+    if any(segment in path for segment in _NOISE_DIRS):
+        return True
+    return path.endswith(_NOISE_SUFFIXES)
+
+
 def _jaccard(set_a, set_b):
     if not set_a and not set_b:
         return 1.0
@@ -287,6 +298,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
             untracked, _ = _run_cmd(
                 ["git", "-C", str(workspace), "ls-files", "--others", "--exclude-standard"], timeout=30)
             produced_set.update(line for line in untracked.splitlines() if line.strip())
+            produced_set = {path for path in produced_set if not _is_noise(path)}
             produced_files = list(produced_set)
             diff_overlap = _jaccard(produced_set, expected_files)
         except Exception:

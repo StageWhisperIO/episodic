@@ -146,6 +146,17 @@ def test_run_replay_local_repo_fallback_copies_root(tmp_path, monkeypatch, sampl
     assert result["workspace"] == str(workspace)
 
 
+def test_is_noise_filters_build_artifacts():
+    from episodic.replay import _is_noise
+
+    assert _is_noise("__pycache__/mod.cpython-312.pyc")
+    assert _is_noise("src/a.pyc")
+    assert _is_noise(".pytest_cache/v/cache/lastfailed")
+    assert _is_noise("node_modules/x/index.js")
+    assert not _is_noise("src/http.py")
+    assert not _is_noise("f.py")
+
+
 def test_run_replay_local_repo_diff_scoring(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
