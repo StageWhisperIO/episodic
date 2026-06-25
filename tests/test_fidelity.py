@@ -38,6 +38,13 @@ def test_empty_both_is_perfect():
     assert s["composite"] == 1.0
 
 
+def test_empty_prediction_does_not_inflate_consistency():
+    s = fidelity.score_observation("", "ls\nfile1.txt\nfile2.txt")
+    assert s["consistency"] == 0.0
+    assert s["factuality"] == 0.0
+    assert s["composite"] < 0.2
+
+
 def test_classify_content_detects_runtime_json_and_type():
     info = fidelity.classify_content('{"pid": 5, "ts": "2026-06-14T10:00:00Z"}')
     assert info["is_json"] is True

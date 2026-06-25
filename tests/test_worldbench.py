@@ -65,6 +65,25 @@ def test_hybrid_judge_blends_with_rule_scores():
     assert hybrid["overall"]["composite"] < rule_only["overall"]["composite"]
 
 
+def test_turing_oracle_is_exactly_indistinguishable():
+    pop = make_population(16, seed=4)
+    oracle = worldbench.turing_test(pop, "oracle", seed=0)
+    assert oracle["discriminator_accuracy"] == 0.5
+    assert oracle["indistinguishability"] == 1.0
+
+
+def test_command_predictor_rejects_bad_template():
+    import pytest
+
+    with pytest.raises(ValueError):
+        worldbench.command_predictor("model {model} reads {prompt_file}")
+
+
+def test_command_predictor_accepts_prompt_file_template():
+    predict = worldbench.command_predictor("cat {prompt_file}")
+    assert predict({"history": "hello world"}).strip() == "hello world"
+
+
 def test_callable_predictor_supported():
     pop = make_population(5, seed=6)
     report = worldbench.run_bench(pop, lambda s: s["target_observation"][:5])

@@ -81,7 +81,7 @@ def _recall_precision(predicted, ground_truth):
     gold = _tokens(ground_truth)
     inter = pred & gold
     recall = 1.0 if not gold else len(inter) / len(gold)
-    precision = 1.0 if not pred else len(inter) / len(pred)
+    precision = 0.0 if not pred else len(inter) / len(pred)
     return recall, precision
 
 

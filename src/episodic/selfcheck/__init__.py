@@ -106,8 +106,8 @@ def _check_worldbench():
     empty = worldbench.run_bench(pop, "empty")["overall"]["composite"]
     assert oracle == 1.0 and empty < oracle, (oracle, empty)
     turing = worldbench.turing_test(pop, "oracle")
-    assert turing["indistinguishability"] is not None
-    return True, f"worldbench oracle={oracle} empty={empty}"
+    assert turing["indistinguishability"] == 1.0, turing
+    return True, f"worldbench oracle={oracle} empty={empty} turing_indist={turing['indistinguishability']}"
 
 
 def _check_replay_plan():

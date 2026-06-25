@@ -33,18 +33,26 @@ NAMED_PREDICTORS = {
 
 
 def command_predictor(template, timeout=120):
+    try:
+        template.format(prompt_file="probe")
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(f"invalid predictor template; only {{prompt_file}} is supported: {exc}")
+
     def predict(sample):
         handle = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
-        handle.write(sample["history"])
-        handle.close()
-        cmd = template.format(prompt_file=shlex.quote(handle.name))
         try:
+            handle.write(sample["history"])
+            handle.close()
+            cmd = template.format(prompt_file=shlex.quote(handle.name))
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
             return result.stdout
         except Exception:
             return ""
         finally:
-            os.unlink(handle.name)
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
 
     return predict
 
@@ -159,21 +167,24 @@ def turing_test(episodes, predictor="prefix", *, discriminator=None, one_per_tra
     discriminator = discriminator or default_discriminator
     predict = NAMED_PREDICTORS[predictor] if isinstance(predictor, str) else predictor
     samples = wm_samples(episodes, one_per_trajectory=one_per_trajectory, seed=seed)
-    correct = 0
+    score = 0.0
     for sample in samples:
         real = sample["target_observation"]
         fake = predict(sample)
+        if real == fake:
+            score += 0.5
+            continue
         real_pos = _real_position(f"{sample['episode_id']}:{sample['turn_index']}", seed)
         pair = [fake, fake]
         pair[real_pos] = real
-        pair[1 - real_pos] = fake
         guess = discriminator(pair[0], pair[1])
         if guess == real_pos:
-            correct += 1
+            score += 1.0
     n = len(samples)
+    accuracy = score / n if n else None
     return {
         "predictor": predictor if isinstance(predictor, str) else "callable",
         "n": n,
-        "discriminator_accuracy": round(correct / n, 4) if n else None,
-        "indistinguishability": round(1.0 - abs(correct / n - 0.5) * 2, 4) if n else None,
+        "discriminator_accuracy": round(accuracy, 4) if n else None,
+        "indistinguishability": round(1.0 - abs(accuracy - 0.5) * 2, 4) if n else None,
     }

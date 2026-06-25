@@ -351,7 +351,10 @@ def cmd_worldbench(args):
     if args.cmd:
         if not args.execute:
             _fail("--cmd runs a shell command per turn; pass --execute to allow it")
-        predictor = worldbench.command_predictor(args.cmd)
+        try:
+            predictor = worldbench.command_predictor(args.cmd)
+        except ValueError as exc:
+            _fail(str(exc))
     else:
         predictor = args.predictor
 
