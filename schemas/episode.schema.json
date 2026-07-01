@@ -241,6 +241,9 @@
           },
           "ok": {
             "type": "boolean"
+          },
+          "output_excerpt": {
+            "type": "string"
           }
         }
       }

@@ -77,3 +77,12 @@ def finalize_session(session_id=None, start=None):
     episode = build_episode(session)
     store.save_episode(episode, start)
     return episode
+
+
+def renormalize(start=None):
+    rebuilt = []
+    for session_id in store.list_sessions(start):
+        episode = finalize_session(session_id, start)
+        if episode is not None:
+            rebuilt.append(episode["id"])
+    return rebuilt

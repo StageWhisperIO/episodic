@@ -31,11 +31,11 @@ def _clamp(value, low=0.0, high=1.0):
 
 
 def _test_pass(episode):
-    tests = episode["tests"]
-    if not tests:
+    executed = [test for test in episode["tests"] if test.get("total", 0) > 0]
+    if not executed:
         return 0.0, False
-    passed = sum(1 for test in tests if test["ok"])
-    return passed / len(tests), True
+    passed = sum(1 for test in executed if test["ok"])
+    return passed / len(executed), True
 
 
 def _human_label(episode):

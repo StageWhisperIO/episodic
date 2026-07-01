@@ -241,6 +241,7 @@ EPISODE_SCHEMA = {
                     "skipped": {"type": "integer"},
                     "total": {"type": "integer"},
                     "ok": {"type": "boolean"},
+                    "output_excerpt": {"type": "string"},
                 },
             },
         },

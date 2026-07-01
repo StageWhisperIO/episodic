@@ -10,6 +10,9 @@ _NON_TEST_PROGRAMS = frozenset({
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 _SEGMENT_SPLIT = re.compile(r"\|\||&&|[;\n|]")
 _ENV_ASSIGN = re.compile(r"^\w+=")
+_COMPILE_ONLY = re.compile(r"--no-run\b|--collect-only\b|--co\b|--dry-run\b")
+
+TEST_OUTPUT_EXCERPT = 2000
 
 TEST_COMMAND_PATTERNS = (
     ("pytest", re.compile(r"\bpytest\b|\bpy\.test\b")),
@@ -37,14 +40,11 @@ def _parser(func):
 
 @_parser
 def _pytest(output):
-    match = re.search(
-        r"(?:(\d+) failed.*?)?(?:(\d+) passed)?(?:.*?(\d+) skipped)?",
-        output,
-    )
-    passed = re.search(r"(\d+) passed", output)
-    failed = re.search(r"(\d+) failed", output)
-    skipped = re.search(r"(\d+) skipped", output)
-    errors = re.search(r"(\d+) error", output)
+    tail = "\n".join(output.splitlines()[-15:])
+    passed = re.search(r"(\d+) passed", tail)
+    failed = re.search(r"(\d+) failed", tail)
+    skipped = re.search(r"(\d+) skipped", tail)
+    errors = re.search(r"(\d+) error", tail)
     if not (passed or failed or errors):
         return None
     return {
@@ -106,6 +106,8 @@ def classify_command(command):
         segment = segment.strip()
         if not segment or _segment_program(segment) in _NON_TEST_PROGRAMS:
             continue
+        if _COMPILE_ONLY.search(segment):
+            continue
         for framework, pattern in TEST_COMMAND_PATTERNS:
             if pattern.search(segment):
                 return framework
@@ -143,4 +145,5 @@ def detect_test_run(command, output, ts, exit_code=None):
         "skipped": counts["skipped"],
         "total": total,
         "ok": ok,
+        "output_excerpt": (output or "")[-TEST_OUTPUT_EXCERPT:],
     }

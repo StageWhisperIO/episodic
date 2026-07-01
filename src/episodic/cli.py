@@ -256,6 +256,12 @@ def cmd_finalize(args):
     return 0
 
 
+def cmd_renormalize(args):
+    rebuilt = service.renormalize()
+    print(f"renormalized {len(rebuilt)} episode(s) from stored sessions")
+    return 0
+
+
 def cmd_schema(args):
     if args.schema_command == "dump":
         target = paths.resolve_base() / "schemas" / "episode.schema.json"
@@ -476,6 +482,10 @@ def build_parser():
     finalize = sub.add_parser("finalize", help="finalize the current session into an episode")
     finalize.add_argument("--session")
     finalize.set_defaults(func=cmd_finalize)
+
+    renormalize = sub.add_parser(
+        "renormalize", help="rebuild all stored episodes from their raw session events")
+    renormalize.set_defaults(func=cmd_renormalize)
 
     schema = sub.add_parser("schema", help="print or dump the CodingEpisode JSON Schema")
     schema.add_argument("schema_command", nargs="?", default="print", choices=["print", "dump"])

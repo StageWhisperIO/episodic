@@ -32,6 +32,23 @@ def test_real_test_after_pipe_or_exploration_still_classifies():
     assert classify_command("cat input.txt | pytest -") == "pytest"
 
 
+def test_compile_only_runs_are_not_test_runs():
+    assert classify_command("cargo test --no-run --manifest-path x/Cargo.toml") is None
+    assert classify_command("pytest --collect-only tests/") is None
+    assert detect_test_run("cargo test --no-run", "Finished test [unoptimized]", "ts", exit_code=0) is None
+
+
+def test_pytest_summary_parsed_from_tail_not_stray_numbers():
+    output = "collected 3 items\nsome log line mentioning 5438 failed elsewhere\n" + ("x\n" * 30) + "===== 3 passed in 0.4s ====="
+    result = detect_test_run("pytest -q", output, "ts", exit_code=0)
+    assert result["passed"] == 3 and result["failed"] == 0 and result["ok"] is True
+
+
+def test_output_excerpt_is_retained():
+    result = detect_test_run("pytest -q", "lots of output\n3 passed in 0.1s", "ts")
+    assert result["output_excerpt"].endswith("3 passed in 0.1s")
+
+
 def test_passing_no_exit_code():
     result = detect_test_run("python3 -m pytest -q", "5 passed in 0.1s", "ts")
     assert result["ok"] is True and result["passed"] == 5
