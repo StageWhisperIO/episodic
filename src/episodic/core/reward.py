@@ -30,12 +30,37 @@ def _clamp(value, low=0.0, high=1.0):
     return max(low, min(high, value))
 
 
+def _run_rate(test):
+    denom = test.get("passed", 0) + test.get("failed", 0) + test.get("errors", 0)
+    if denom == 0:
+        return 1.0 if test.get("ok") else 0.0
+    return test.get("passed", 0) / denom
+
+
+def terminal_test_signal(tests):
+    runs = [test for test in tests if test.get("total", 0) > 0]
+    if not runs:
+        return 0.0, False, False
+    final = runs[-1]
+    ever_green = any(test.get("ok") for test in runs)
+    blocked_on_env = (
+        not final.get("ok")
+        and final.get("errors", 0) > 0
+        and final.get("passed", 0) == 0
+        and final.get("failed", 0) == 0
+    )
+    if final.get("ok"):
+        score = 1.0
+    else:
+        score = _run_rate(final)
+        if ever_green:
+            score *= 0.5
+    return round(score, 4), True, blocked_on_env
+
+
 def _test_pass(episode):
-    executed = [test for test in episode["tests"] if test.get("total", 0) > 0]
-    if not executed:
-        return 0.0, False
-    passed = sum(1 for test in executed if test["ok"])
-    return passed / len(executed), True
+    score, has_tests, _ = terminal_test_signal(episode["tests"])
+    return score, has_tests
 
 
 def _human_label(episode):

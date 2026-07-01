@@ -236,6 +236,9 @@
           "skipped": {
             "type": "integer"
           },
+          "errors": {
+            "type": "integer"
+          },
           "total": {
             "type": "integer"
           },

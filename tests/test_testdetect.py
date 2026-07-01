@@ -49,6 +49,19 @@ def test_output_excerpt_is_retained():
     assert result["output_excerpt"].endswith("3 passed in 0.1s")
 
 
+def test_pytest_errors_are_split_from_failures():
+    result = detect_test_run("pytest -q", "11 deselected, 1 warning, 6 errors in 1.19s", "ts", exit_code=1)
+    assert result["errors"] == 6
+    assert result["failed"] == 0
+    assert result["total"] == 6
+    assert result["ok"] is False
+
+
+def test_pytest_failures_and_errors_are_separate():
+    result = detect_test_run("pytest -q", "1 failed, 2 passed, 3 errors in 0.5s", "ts", exit_code=1)
+    assert result["failed"] == 1 and result["errors"] == 3 and result["passed"] == 2
+
+
 def test_passing_no_exit_code():
     result = detect_test_run("python3 -m pytest -q", "5 passed in 0.1s", "ts")
     assert result["ok"] is True and result["passed"] == 5

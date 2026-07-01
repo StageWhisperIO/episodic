@@ -235,6 +235,9 @@ def build_episode(session):
     episode["outcome"] = meta.get("outcome") or episode["outcome"]
     episode["stats"] = _build_stats(events, meta)
     episode["stats"]["tests_run"] = len(episode["tests"])
-    episode["labels"] = sorted(set(meta.get("labels", []) + [f["label"] for f in episode["human_feedback"]]))
+    labels = set(meta.get("labels", []) + [f["label"] for f in episode["human_feedback"]])
+    if reward.terminal_test_signal(episode["tests"])[2]:
+        labels.add("blocked_on_env")
+    episode["labels"] = sorted(labels)
     episode["reward_vector"] = reward.reward_vector(episode)
     return episode

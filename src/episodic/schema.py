@@ -239,6 +239,7 @@ EPISODE_SCHEMA = {
                     "passed": {"type": "integer"},
                     "failed": {"type": "integer"},
                     "skipped": {"type": "integer"},
+                    "errors": {"type": "integer"},
                     "total": {"type": "integer"},
                     "ok": {"type": "boolean"},
                     "output_excerpt": {"type": "string"},

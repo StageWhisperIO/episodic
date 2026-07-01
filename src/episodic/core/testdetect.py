@@ -49,8 +49,9 @@ def _pytest(output):
         return None
     return {
         "passed": int(passed.group(1)) if passed else 0,
-        "failed": (int(failed.group(1)) if failed else 0) + (int(errors.group(1)) if errors else 0),
+        "failed": int(failed.group(1)) if failed else 0,
         "skipped": int(skipped.group(1)) if skipped else 0,
+        "errors": int(errors.group(1)) if errors else 0,
     }
 
 
@@ -128,11 +129,15 @@ def detect_test_run(command, output, ts, exit_code=None):
     framework = classify_command(command or "")
     if framework is None:
         return None
-    counts = parse_output(output or "") or {"passed": 0, "failed": 0, "skipped": 0}
-    total = counts["passed"] + counts["failed"] + counts["skipped"]
+    counts = parse_output(output or "") or {}
+    passed = counts.get("passed", 0)
+    failed = counts.get("failed", 0)
+    skipped = counts.get("skipped", 0)
+    errors = counts.get("errors", 0)
+    total = passed + failed + skipped + errors
     if exit_code is not None and exit_code != 0:
         ok = False
-    elif total > 0 and counts["failed"] == 0:
+    elif total > 0 and failed == 0 and errors == 0:
         ok = True
     else:
         ok = False
@@ -140,9 +145,10 @@ def detect_test_run(command, output, ts, exit_code=None):
         "ts": ts,
         "framework": framework,
         "command": command,
-        "passed": counts["passed"],
-        "failed": counts["failed"],
-        "skipped": counts["skipped"],
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "errors": errors,
         "total": total,
         "ok": ok,
         "output_excerpt": (output or "")[-TEST_OUTPUT_EXCERPT:],
