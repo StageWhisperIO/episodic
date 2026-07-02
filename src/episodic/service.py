@@ -67,6 +67,10 @@ def update_episode(episode, start=None):
     return episode
 
 
+def _has_content(episode):
+    return bool(episode["steps"] or episode["commands"] or episode["diffs"] or episode["tests"])
+
+
 def finalize_session(session_id=None, start=None):
     session_id = resolve_session_id(session_id, start)
     if not session_id:
@@ -75,6 +79,10 @@ def finalize_session(session_id=None, start=None):
     if not session["events"] and not session["meta"]:
         return None
     episode = build_episode(session)
+    if not _has_content(episode):
+        existing = store.get_episode(episode["id"], start)
+        if existing is not None and _has_content(existing):
+            return existing
     store.save_episode(episode, start)
     return episode
 
