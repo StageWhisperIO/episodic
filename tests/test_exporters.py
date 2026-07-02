@@ -27,13 +27,39 @@ def test_sft_export_only_good(episodes, tmp_path):
     path = tmp_path / "sft.jsonl"
     assert path.exists()
     lines = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
-    assert len(lines) == 1
-    assert result["count"] == 1
-    row = lines[0]
-    assert row["messages"][0]["role"] == "user"
-    assert row["messages"][1]["role"] == "assistant"
-    assert "episode_id" in row["meta"]
-    assert "reward" in row["meta"]
+    assert result["episodes"] == 1
+    assert len(lines) == 2 and result["count"] == 2
+    for row in lines:
+        assert row["messages"][0]["role"] == "user"
+        assert row["messages"][1]["role"] == "assistant"
+        assert row["messages"][0]["content"].startswith("USER: ")
+        assert row["messages"][1]["content"].startswith("ACTION ")
+        assert "OBS:" not in row["messages"][1]["content"]
+        assert {"episode_id", "reward", "step_index"} <= set(row["meta"])
+
+
+def test_sft_segments_are_next_action_with_growing_history(episodes, tmp_path):
+    exporters.export(episodes, "sft", tmp_path)
+    lines = [json.loads(l) for l in (tmp_path / "sft.jsonl").read_text().splitlines() if l.strip()]
+    first, second = lines[0], lines[1]
+    assert "ACTION" not in first["messages"][0]["content"].split("\n", 1)[-1] or first["meta"]["step_index"] == 1
+    assert "OBS:" in second["messages"][0]["content"]
+    assert second["meta"]["step_index"] > first["meta"]["step_index"]
+
+
+def test_sft_history_is_bounded(tmp_path):
+    from episodic import new_episode
+    ep = new_episode(id="ep_big", intent="do the thing")
+    ep["reward_vector"] = {"composite": 0.9}
+    ep["steps"] = [
+        {"index": i, "ts": "t", "type": "shell_command", "tool": "Bash",
+         "input": {"command": f"echo {i}"}, "observation": "x" * 5000, "cwd": None}
+        for i in range(6)
+    ]
+    rows = exporters.segment_episode(ep)
+    assert len(rows) == 6
+    bound = exporters.SFT_HISTORY_BUDGET + exporters.SFT_INTENT_BUDGET + len("USER: \n")
+    assert all(len(r["messages"][0]["content"]) <= bound for r in rows)
 
 
 def test_reward_export_both_episodes(episodes, tmp_path):

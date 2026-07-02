@@ -17,22 +17,57 @@ def write_jsonl(path, rows):
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+SFT_HISTORY_BUDGET = 4000
+_ACTION_STEP_TYPES = {"file_read", "file_edit", "file_write", "file_delete", "shell_command", "tool_post"}
+
+
+def _action_line(step):
+    if step.get("type") == "user_prompt":
+        prompt = (step.get("input") or {}).get("prompt", "")
+        return f"ACTION user_prompt({prompt[:120]})"
+    tool = step.get("tool") or step.get("type") or "unknown"
+    compact = json.dumps(step.get("input") or {}, ensure_ascii=False)[:120]
+    cwd = step.get("cwd")
+    location = f" @ {cwd}" if cwd else ""
+    return f"ACTION {tool}({compact}){location}"
+
+
+def _obs_line(step):
+    return f"OBS: {(step.get('observation') or '')[:200]}"
+
+
 def trajectory_text(ep):
-    parts = [f"USER: {ep['intent']}"]
+    parts = [f"USER: {ep.get('intent', '')}"]
     for step in ep.get("steps", []):
-        if step.get("type") == "user_prompt":
-            prompt = (step.get("input") or {}).get("prompt", "")
-            parts.append(f"ACTION user_prompt({prompt[:120]})")
-        else:
-            tool = step.get("tool") or step.get("type") or "unknown"
-            raw_input = step.get("input") or {}
-            compact = json.dumps(raw_input, ensure_ascii=False)[:120]
-            cwd = step.get("cwd")
-            location = f" @ {cwd}" if cwd else ""
-            parts.append(f"ACTION {tool}({compact}){location}")
-        obs = (step.get("observation") or "")[:200]
-        parts.append(f"OBS: {obs}")
+        parts.append(_action_line(step))
+        parts.append(_obs_line(step))
     return "\n".join(parts)
+
+
+SFT_INTENT_BUDGET = 600
+
+
+def segment_episode(ep, history_budget=SFT_HISTORY_BUDGET):
+    intent = (ep.get("intent") or "")[:SFT_INTENT_BUDGET]
+    reward = (ep.get("reward_vector") or {}).get("composite")
+    examples = []
+    history = []
+    for step in ep.get("steps", []):
+        if step.get("type") in _ACTION_STEP_TYPES:
+            context = "\n".join(history)[-history_budget:]
+            user_content = f"USER: {intent}" + (f"\n{context}" if context else "")
+            examples.append({
+                "messages": [
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": _action_line(step)},
+                ],
+                "meta": {"episode_id": ep["id"], "reward": reward, "step_index": step.get("index")},
+            })
+            history.append(_action_line(step))
+            history.append(_obs_line(step))
+        else:
+            history.append(_action_line(step))
+    return examples
 
 
 def is_good(ep):
@@ -74,21 +109,13 @@ def _export_jsonl(episodes, out_dir):
 
 
 def _export_sft(episodes, out_dir):
+    good = [ep for ep in episodes if is_good(ep)]
     rows = []
-    for ep in episodes:
-        if not is_good(ep):
-            continue
-        rv = ep.get("reward_vector") or {}
-        rows.append({
-            "messages": [
-                {"role": "user", "content": ep["intent"]},
-                {"role": "assistant", "content": trajectory_text(ep)},
-            ],
-            "meta": {"episode_id": ep["id"], "reward": rv.get("composite")},
-        })
+    for ep in good:
+        rows.extend(segment_episode(ep))
     path = out_dir / "sft.jsonl"
     write_jsonl(path, rows)
-    return {"files": [str(path)], "count": len(rows)}
+    return {"files": [str(path)], "count": len(rows), "episodes": len(good)}
 
 
 def _export_dpo(episodes, out_dir):
