@@ -26,7 +26,7 @@ def _discover():
     global _DISCOVERED
     if _DISCOVERED:
         return
-    from . import command, trl, unsloth  # noqa: F401  built-ins self-register on import
+    from . import command, trl, unsloth, mlx  # noqa: F401  built-ins self-register on import
     try:
         from importlib.metadata import entry_points
 
