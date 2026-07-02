@@ -18,11 +18,12 @@ OUTCOME_SCORES = {
 }
 
 WEIGHTS = {
-    "test_pass": 0.30,
-    "outcome": 0.30,
-    "human_label": 0.20,
-    "edit_focus": 0.10,
-    "cost_efficiency": 0.10,
+    "test_pass": 0.25,
+    "outcome": 0.25,
+    "rubric": 0.20,
+    "human_label": 0.15,
+    "edit_focus": 0.075,
+    "cost_efficiency": 0.075,
 }
 
 
@@ -98,16 +99,29 @@ def _edit_focus(episode):
     return _clamp(edits / denominator)
 
 
-def reward_vector(episode):
+def _rubric(episode, judge=None):
+    from . import rubric
+
+    result = rubric.score_episode(episode, judge=judge)
+    if result["score"] is None:
+        return 0.5, False, None
+    summary = {"score": result["score"], "hard_pass": result["hard_pass"],
+               "hard_violations": result["hard_violations"]}
+    return result["score"], True, summary
+
+
+def reward_vector(episode, judge=None):
     test_pass, has_tests = _test_pass(episode)
     human_label, has_feedback = _human_label(episode)
     outcome = _outcome(episode)
     cost_efficiency, has_cost = _cost_efficiency(episode)
     edit_focus = _edit_focus(episode)
+    rubric_score, has_rubric, rubric_summary = _rubric(episode, judge)
 
     normalized = {
         "test_pass": test_pass if has_tests else 0.5,
         "outcome": (outcome + 1) / 2,
+        "rubric": rubric_score,
         "human_label": (human_label + 1) / 2 if has_feedback else 0.5,
         "edit_focus": edit_focus,
         "cost_efficiency": cost_efficiency if has_cost else 0.5,
@@ -120,6 +134,7 @@ def reward_vector(episode):
         "outcome": round(outcome, 4),
         "cost_efficiency": round(cost_efficiency, 4),
         "edit_focus": round(edit_focus, 4),
+        "rubric": round(rubric_score, 4),
         "composite": round(composite, 4),
         "components": {
             "normalized": {key: round(value, 4) for key, value in normalized.items()},
@@ -127,5 +142,7 @@ def reward_vector(episode):
             "has_tests": has_tests,
             "has_feedback": has_feedback,
             "has_cost": has_cost,
+            "has_rubric": has_rubric,
+            "rubric": rubric_summary,
         },
     }

@@ -1,6 +1,5 @@
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://episodic.dev/schemas/coding-episode.json",
+wrote /Users/piotrmrzyglowski/Documents/projects/episodic/schemas/episode.schema.json
+ev/schemas/coding-episode.json",
   "title": "CodingEpisode",
   "type": "object",
   "required": [
@@ -394,6 +393,9 @@
           "type": "number"
         },
         "edit_focus": {
+          "type": "number"
+        },
+        "rubric": {
           "type": "number"
         },
         "composite": {

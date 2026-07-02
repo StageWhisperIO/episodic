@@ -96,6 +96,7 @@ def default_reward():
         "outcome": 0.0,
         "cost_efficiency": 0.0,
         "edit_focus": 0.0,
+        "rubric": 0.0,
         "composite": 0.0,
         "components": {},
     }
@@ -288,6 +289,7 @@ EPISODE_SCHEMA = {
                 "outcome": {"type": "number"},
                 "cost_efficiency": {"type": "number"},
                 "edit_focus": {"type": "number"},
+                "rubric": {"type": "number"},
                 "composite": {"type": "number"},
                 "components": {"type": "object"},
             },
