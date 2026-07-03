@@ -59,11 +59,22 @@ def _file_path(tool_input):
     return None
 
 
+EXIT_CODE_KEYS = ("exit_code", "exitCode", "returncode", "return_code", "code", "status")
+
+
 def _exit_code(raw_response):
-    if isinstance(raw_response, dict):
-        value = raw_response.get("exit_code")
+    if not isinstance(raw_response, dict):
+        return None
+    for key in EXIT_CODE_KEYS:
+        value = raw_response.get(key)
+        if isinstance(value, bool):
+            continue
         if isinstance(value, int):
             return value
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value)
+    if raw_response.get("interrupted") is True:
+        return 130
     return None
 
 

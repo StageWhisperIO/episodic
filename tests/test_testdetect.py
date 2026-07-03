@@ -38,6 +38,22 @@ def test_compile_only_runs_are_not_test_runs():
     assert detect_test_run("cargo test --no-run", "Finished test [unoptimized]", "ts", exit_code=0) is None
 
 
+def test_no_output_no_exit_test_command_is_not_a_run():
+    assert detect_test_run("cargo test --manifest-path x/Cargo.toml", "", "ts", exit_code=None) is None
+    assert detect_test_run("npx vitest run", "", "ts", exit_code=None) is None
+
+
+def test_test_command_with_output_is_kept_even_if_unparsed():
+    result = detect_test_run("cargo test", "Compiling foo v0.1.0", "ts", exit_code=None)
+    assert result is not None and result["total"] == 0 and result["ok"] is False
+    assert result["output_excerpt"].endswith("Compiling foo v0.1.0")
+
+
+def test_test_command_with_exit_code_is_kept_even_without_output():
+    result = detect_test_run("cargo test", "", "ts", exit_code=101)
+    assert result is not None and result["ok"] is False
+
+
 def test_pytest_summary_parsed_from_tail_not_stray_numbers():
     output = "collected 3 items\nsome log line mentioning 5438 failed elsewhere\n" + ("x\n" * 30) + "===== 3 passed in 0.4s ====="
     result = detect_test_run("pytest -q", output, "ts", exit_code=0)

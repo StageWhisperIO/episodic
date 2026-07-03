@@ -129,12 +129,15 @@ def detect_test_run(command, output, ts, exit_code=None):
     framework = classify_command(command or "")
     if framework is None:
         return None
-    counts = parse_output(output or "") or {}
+    text = output or ""
+    counts = parse_output(text) or {}
     passed = counts.get("passed", 0)
     failed = counts.get("failed", 0)
     skipped = counts.get("skipped", 0)
     errors = counts.get("errors", 0)
     total = passed + failed + skipped + errors
+    if total == 0 and not text.strip() and exit_code is None:
+        return None
     if exit_code is not None and exit_code != 0:
         ok = False
     elif total > 0 and failed == 0 and errors == 0:
