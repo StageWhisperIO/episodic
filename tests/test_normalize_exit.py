@@ -16,6 +16,12 @@ def test_exit_code_ignores_bools_and_non_numeric():
     assert _exit_code("not a dict") is None
 
 
+def test_exit_code_rejects_malformed_numeric_strings():
+    assert _exit_code({"exit_code": "--1"}) is None
+    assert _exit_code({"code": "-"}) is None
+    assert _exit_code({"code": "1-2"}) is None
+
+
 def test_interrupted_maps_to_130():
     assert _exit_code({"interrupted": True}) == 130
     assert _exit_code({"interrupted": False}) is None

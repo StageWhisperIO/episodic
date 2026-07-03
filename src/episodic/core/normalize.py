@@ -71,8 +71,11 @@ def _exit_code(raw_response):
             continue
         if isinstance(value, int):
             return value
-        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
-            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            digits = stripped[1:] if stripped[:1] == "-" else stripped
+            if digits.isdigit():
+                return int(stripped)
     if raw_response.get("interrupted") is True:
         return 130
     return None
