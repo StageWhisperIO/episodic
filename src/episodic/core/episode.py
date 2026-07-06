@@ -1,8 +1,10 @@
 import os
+from collections import defaultdict
 from datetime import datetime
 
-from ..schema import new_episode, default_stats
-from . import gitinfo, diffparse, testdetect, reward
+from ..schema import new_episode, new_event, default_stats
+from . import gitinfo, diffparse, testdetect, reward, transcript
+from .normalize import MAX_RESPONSE_CHARS
 from .ids import episode_id_from_session
 
 STEP_EVENT_TYPES = {
@@ -87,6 +89,86 @@ def _prompt_input(event):
     return {}
 
 
+def _transcript_path(events):
+    for event in events:
+        if event["type"] == "session_start":
+            path = event["data"].get("transcript_path")
+            if path:
+                return path
+    return None
+
+
+def _synth_shell_event(pre_event, command, record):
+    return new_event(
+        pre_event["session_id"],
+        "shell_command",
+        source=pre_event.get("source", "claude-code"),
+        tool_name="Bash",
+        data={
+            "cwd": pre_event["data"].get("cwd"),
+            "command": command,
+            "response": (record["output"] or "")[:MAX_RESPONSE_CHARS],
+            "exit_code": record["exit_code"],
+            "approved": True,
+            "reconstructed": True,
+        },
+        ts=pre_event["ts"],
+    )
+
+
+def _reconstruct_failed_commands(events):
+    path = _transcript_path(events)
+    if not path:
+        return events
+    records = transcript.bash_records(path)
+    pre_by_command = defaultdict(list)
+    post_by_command = defaultdict(int)
+    for event in events:
+        if event["type"] == "tool_pre" and event.get("tool_name") == "Bash":
+            pre_by_command[(event["data"].get("tool_input") or {}).get("command", "")].append(event)
+        elif event["type"] == "shell_command":
+            post_by_command[event["data"].get("command", "")] += 1
+
+    inserts = defaultdict(list)
+    for command, records_deque in records.items():
+        entries = list(records_deque)
+        if not any(entry["is_error"] for entry in entries):
+            continue
+        pre_events = pre_by_command.get(command, [])
+        successes = sum(1 for entry in entries if not entry["is_error"])
+        if len(pre_events) != len(entries) or post_by_command.get(command, 0) != successes:
+            continue
+        for pre_event, entry in zip(pre_events, entries):
+            if entry["is_error"]:
+                inserts[id(pre_event)].append(_synth_shell_event(pre_event, command, entry))
+    if not inserts:
+        return events
+
+    result = []
+    for event in events:
+        result.append(event)
+        result.extend(inserts.get(id(event), ()))
+    return result
+
+
+def _apply_transcript_exit_codes(events):
+    path = _transcript_path(events)
+    if not path:
+        return
+    outcomes = transcript.bash_outcomes(path)
+    by_command = defaultdict(list)
+    for event in events:
+        if event["type"] == "shell_command":
+            by_command[event["data"].get("command", "")].append(event)
+    for command, group in by_command.items():
+        results = outcomes.get(command)
+        if results is None or len(results) != len(group):
+            continue
+        for event, is_error in zip(group, results):
+            if event["data"].get("exit_code") is None:
+                event["data"]["exit_code"] = 1 if is_error else 0
+
+
 def _build_commands(events):
     commands = []
     for event in events:
@@ -101,6 +183,7 @@ def _build_commands(events):
             "exit_code": data.get("exit_code"),
             "output_excerpt": (data.get("response") or "")[:OBSERVATION_LIMIT],
             "is_test": testdetect.classify_command(command) is not None,
+            "reconstructed": bool(data.get("reconstructed")),
         })
     return commands
 
@@ -115,6 +198,7 @@ def _build_tests(events):
             data.get("command", ""), data.get("response", ""), event["ts"], data.get("exit_code")
         )
         if detected:
+            detected["reconstructed"] = bool(data.get("reconstructed"))
             tests.append(detected)
     return tests
 
@@ -128,7 +212,7 @@ def _relativize(path, base):
     return path
 
 
-def _event_diffs(repo_state, cwd, events):
+def _touched_files(repo_state, cwd, events):
     base = repo_state.get("root") or cwd
     touched = {}
     for event in events:
@@ -136,9 +220,13 @@ def _event_diffs(repo_state, cwd, events):
             path = event["data"].get("file_path")
             if path:
                 touched[_relativize(path, base)] = DIFF_STATUS_BY_TYPE[event["type"]]
+    return touched
+
+
+def _event_diffs(repo_state, cwd, events):
     return [
         {"file": path, "status": status, "additions": 0, "deletions": 0, "unified": None}
-        for path, status in sorted(touched.items())
+        for path, status in sorted(_touched_files(repo_state, cwd, events).items())
     ]
 
 
@@ -147,9 +235,11 @@ def _build_diffs(repo_state, cwd, events, live=True):
     base_commit = repo_state.get("base_commit")
     git_ok = bool(root and base_commit and gitinfo.git_available(root))
     if live and git_ok and gitinfo.head_commit(root) == base_commit:
+        touched = _touched_files(repo_state, cwd, events)
         parsed = diffparse.parse_unified_diff(gitinfo.working_diff(root, base_commit))
-        if parsed:
-            return parsed, "git-working-tree"
+        scoped = [entry for entry in parsed if entry.get("file") in touched]
+        if scoped:
+            return scoped, "git-working-tree"
         return _event_diffs(repo_state, cwd, events), "events"
     return _event_diffs(repo_state, cwd, events), "events-untrusted" if git_ok else "events"
 
@@ -225,6 +315,8 @@ def build_episode(session):
         repo_state=repo_state,
         created_at=meta.get("created_at"),
     )
+    events = _reconstruct_failed_commands(events)
+    _apply_transcript_exit_codes(events)
     episode["steps"] = _build_steps(events)
     episode["commands"] = _build_commands(events)
     episode["tests"] = _build_tests(events)
