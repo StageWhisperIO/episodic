@@ -138,6 +138,8 @@ def new_episode(id, agent="claude-code", intent="", repo_state=None, created_at=
         "stats": default_stats(),
         "labels": [],
         "diff_source": "unknown",
+        "outcome_hint": None,
+        "deployments": [],
     }
 
 
@@ -258,6 +260,10 @@ EPISODE_SCHEMA = {
                     "ts": {"type": "string"},
                     "label": {"type": "string", "enum": list(FEEDBACK_LABELS)},
                     "note": {"type": ["string", "null"]},
+                    "source": {"type": "string"},
+                    "confidence": {"type": ["number", "null"]},
+                    "evidence_step_index": {"type": ["integer", "null"]},
+                    "model": {"type": ["string", "null"]},
                 },
             },
         },
@@ -299,6 +305,34 @@ EPISODE_SCHEMA = {
         "stats": {"type": "object"},
         "labels": {"type": "array", "items": {"type": "string"}},
         "diff_source": {"type": "string"},
+        "parent_id": {"type": ["string", "null"]},
+        "segment_index": {"type": ["integer", "null"]},
+        "outcome_hint": {
+            "type": ["object", "null"],
+            "properties": {
+                "success": {"type": "string"},
+                "confidence": {"type": "number"},
+                "rationale": {"type": "string"},
+                "source": {"type": "string"},
+                "model": {"type": ["string", "null"]},
+            },
+        },
+        "deployments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["ts", "method", "target_env"],
+                "properties": {
+                    "ts": {"type": "string"},
+                    "command": {"type": "string"},
+                    "method": {"type": "string"},
+                    "target_env": {"type": "string"},
+                    "exit_code": {"type": ["integer", "null"]},
+                    "verified": {"type": ["boolean", "null"]},
+                    "reconstructed": {"type": "boolean"},
+                },
+            },
+        },
     },
 }
 

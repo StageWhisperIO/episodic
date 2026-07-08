@@ -37,6 +37,8 @@ def ingest(payload):
 
 
 def main():
+    if os.environ.get("EPISODIC_DISABLE"):
+        return 0
     raw = sys.stdin.read()
     if not raw.strip():
         return 0

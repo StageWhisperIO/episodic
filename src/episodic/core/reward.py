@@ -64,12 +64,23 @@ def _test_pass(episode):
     return score, has_tests
 
 
+HINT_SCORES = {"yes": 1.0, "partial": 0.3, "no": -1.0, "unclear": 0.0}
+
+
 def _human_label(episode):
     feedback = episode["human_feedback"]
     if not feedback:
         return 0.0, False
-    scores = [HUMAN_LABEL_SCORES.get(item["label"], 0.0) for item in feedback]
-    return sum(scores) / len(scores), True
+    numerator = 0.0
+    denominator = 0.0
+    for item in feedback:
+        weight = item.get("confidence")
+        weight = 1.0 if weight is None else weight
+        numerator += HUMAN_LABEL_SCORES.get(item["label"], 0.0) * weight
+        denominator += weight
+    if denominator == 0:
+        return 0.0, True
+    return numerator / denominator, True
 
 
 def _outcome(episode):
@@ -77,6 +88,29 @@ def _outcome(episode):
     if episode["outcome"].get("caused_regression"):
         score = min(score, -1.0)
     return score
+
+
+def _deploy_signal(episode):
+    prod = [d for d in episode.get("deployments", []) if d.get("target_env") == "prod"]
+    if not prod:
+        return None
+    if any(d.get("verified") is False for d in prod):
+        return -1.0
+    if any(d.get("verified") is True for d in prod):
+        return 1.0
+    return None
+
+
+def _outcome_with_source(episode):
+    if episode["outcome"]["status"] != "open":
+        return _outcome(episode), "authoritative"
+    deploy = _deploy_signal(episode)
+    if deploy is not None:
+        return deploy, "deploy"
+    hint = episode.get("outcome_hint")
+    if hint and hint.get("success") in HINT_SCORES:
+        return HINT_SCORES[hint["success"]] * _clamp(hint.get("confidence", 0.0)), "mined"
+    return _outcome(episode), "none"
 
 
 def _cost_efficiency(episode):
@@ -113,7 +147,7 @@ def _rubric(episode, judge=None):
 def reward_vector(episode, judge=None):
     test_pass, has_tests = _test_pass(episode)
     human_label, has_feedback = _human_label(episode)
-    outcome = _outcome(episode)
+    outcome, outcome_source = _outcome_with_source(episode)
     cost_efficiency, has_cost = _cost_efficiency(episode)
     edit_focus = _edit_focus(episode)
     rubric_score, has_rubric, rubric_summary = _rubric(episode, judge)
@@ -143,6 +177,7 @@ def reward_vector(episode, judge=None):
             "has_feedback": has_feedback,
             "has_cost": has_cost,
             "has_rubric": has_rubric,
+            "outcome_source": outcome_source,
             "rubric": rubric_summary,
         },
     }

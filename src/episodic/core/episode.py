@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from ..schema import new_episode, new_event, default_stats
-from . import gitinfo, diffparse, testdetect, reward, transcript
+from . import gitinfo, diffparse, testdetect, reward, transcript, deploydetect
 from .normalize import MAX_RESPONSE_CHARS
 from .ids import episode_id_from_session
 
@@ -203,6 +203,41 @@ def _build_tests(events):
     return tests
 
 
+def _build_deployments(events):
+    deployments = []
+    for event in events:
+        if event["type"] != "shell_command":
+            continue
+        data = event["data"]
+        classified = deploydetect.classify_deploy(data.get("command", ""))
+        if not classified:
+            continue
+        exit_code = data.get("exit_code")
+        deployments.append({
+            "ts": event["ts"],
+            "command": data.get("command", ""),
+            "method": classified["method"],
+            "target_env": classified["target_env"],
+            "exit_code": exit_code,
+            "verified": False if exit_code not in (0, None) else None,
+            "reconstructed": bool(data.get("reconstructed")),
+        })
+    return deployments
+
+
+def _verify_deployments(episode):
+    negatives = {"wrong", "too_broad", "needed_human_rescue"}
+    negative_after = [
+        item["ts"] for item in episode["human_feedback"]
+        if item.get("source") == "mined" and item.get("label") in negatives and item.get("ts")
+    ]
+    for deployment in episode["deployments"]:
+        if deployment["verified"] is False:
+            continue
+        if any(ts > deployment["ts"] for ts in negative_after):
+            deployment["verified"] = False
+
+
 def _relativize(path, base):
     if base and path and path.startswith(base):
         try:
@@ -301,7 +336,23 @@ def _resolve_cwd(meta, events):
     return None
 
 
-def build_episode(session):
+def _apply_mined_signal(episode, generate):
+    from . import feedback as feedback_mod
+    try:
+        mined = feedback_mod.mine(episode, generate)
+    except Exception:
+        return
+    existing = {(item.get("label"), item.get("evidence_step_index")) for item in episode["human_feedback"]}
+    for item in mined["feedback"]:
+        key = (item["label"], item.get("evidence_step_index"))
+        if key not in existing:
+            episode["human_feedback"].append(item)
+            existing.add(key)
+    if mined["outcome_hint"]:
+        episode["outcome_hint"] = mined["outcome_hint"]
+
+
+def build_episode(session, generate=None):
     events = session["events"]
     meta = session.get("meta") or {}
     agent = meta.get("agent") or (events[0]["source"] if events else "claude-code")
@@ -324,10 +375,16 @@ def build_episode(session):
         repo_state, cwd, events, live=not meta.get("imported")
     )
     episode["human_feedback"] = meta.get("human_feedback", [])
+    episode["deployments"] = _build_deployments(events)
     episode["outcome"] = meta.get("outcome") or episode["outcome"]
+    if generate is not None:
+        _apply_mined_signal(episode, generate)
+    _verify_deployments(episode)
     episode["stats"] = _build_stats(events, meta)
     episode["stats"]["tests_run"] = len(episode["tests"])
     labels = set(meta.get("labels", []) + [f["label"] for f in episode["human_feedback"]])
+    if any(f.get("source") == "mined" for f in episode["human_feedback"]):
+        labels.add("mined_feedback")
     if reward.terminal_test_signal(episode["tests"])[2]:
         labels.add("blocked_on_env")
     episode["labels"] = sorted(labels)

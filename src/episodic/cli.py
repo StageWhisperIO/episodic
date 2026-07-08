@@ -262,6 +262,89 @@ def cmd_renormalize(args):
     return 0
 
 
+def cmd_label(args):
+    from .core import feedback
+    from .core.episode import build_episode
+
+    start = args.store
+    generate = feedback.command_generate(args.cmd, timeout=args.timeout)
+    if args.all:
+        session_ids = store.list_sessions(start)
+    else:
+        session_ids = [args.session or store.get_current(start)]
+    if not any(session_ids):
+        _fail("no current session; pass --session or --all")
+
+    if args.raw:
+        session_id = next(sid for sid in session_ids if sid)
+        base = build_episode(store.get_session(session_id, start))
+        result = feedback.probe(feedback.build_prompt(base), args.cmd, timeout=args.timeout)
+        print(f"command={result['command']}")
+        print(f"exit={result['code']} stdout_chars={len(result['stdout'])} stderr_chars={len(result['stderr'])}")
+        print("--- stdout (first 1200) ---")
+        print(result["stdout"][:1200])
+        if result["stderr"].strip():
+            print("--- stderr (first 600) ---")
+            print(result["stderr"][:600])
+        print("--- extracted json ---")
+        print(feedback._extract_json(result["stdout"]))
+        return 0
+
+    for session_id in session_ids:
+        if not session_id:
+            continue
+        session = store.get_session(session_id, start)
+        if not session["events"]:
+            continue
+        episode = build_episode(session, generate=generate)
+        mined = [item for item in episode["human_feedback"] if item.get("source") == "mined"]
+        hint = episode.get("outcome_hint") or {}
+        rv = episode["reward_vector"]
+        deploys = episode.get("deployments", [])
+        print(f"{episode['id']} ({session_id[:8]}): {len(mined)} mined label(s); "
+              f"outcome_hint={hint.get('success', '-')} ({hint.get('confidence', '-')}); "
+              f"deploys={len(deploys)}; human_label={rv['human_label']} "
+              f"outcome_src={rv['components']['outcome_source']} composite={rv['composite']}")
+        for item in mined:
+            print(f"   [#{item.get('evidence_step_index')}] {item['label']} "
+                  f"({item.get('confidence')}) :: {(item.get('note') or '')[:80]}")
+        for deployment in deploys:
+            print(f"   deploy {deployment['method']}->{deployment['target_env']} "
+                  f"verified={deployment['verified']}")
+        if hint.get("rationale"):
+            print(f"   outcome: {hint.get('rationale')[:100]}")
+        if args.save:
+            store.save_episode(episode, start)
+    if args.save:
+        print("saved.")
+    return 0
+
+
+def cmd_segment(args):
+    from .core import feedback, segment as segment_mod
+
+    start = args.store
+    generate = feedback.command_generate(args.cmd, timeout=args.timeout) if args.label else None
+    session_id = args.session or store.get_current(start)
+    if not session_id:
+        _fail("no current session; pass --session")
+    session = store.get_session(session_id, start)
+    if not session["events"]:
+        _fail("session has no events")
+    children = segment_mod.segment_session(session, generate=generate)
+    print(f"{session_id[:8]} -> {len(children)} sub-trajectory(ies)")
+    for child in children:
+        rv = child["reward_vector"]
+        print(f"   #{child['segment_index']} {child['id']} composite={rv['composite']} "
+              f"steps={len(child['steps'])} tests={len(child['tests'])} deploys={len(child['deployments'])} "
+              f":: {(child['intent'] or '')[:70]!r}")
+        if args.save:
+            store.save_episode(child, start)
+    if args.save:
+        print("saved.")
+    return 0
+
+
 def cmd_schema(args):
     if args.schema_command == "dump":
         target = paths.resolve_base() / "schemas" / "episode.schema.json"
@@ -486,6 +569,25 @@ def build_parser():
     renormalize = sub.add_parser(
         "renormalize", help="rebuild all stored episodes from their raw session events")
     renormalize.set_defaults(func=cmd_renormalize)
+
+    label = sub.add_parser("label", help="mine user-feedback labels + outcome hint from a session via an LLM labeler")
+    label.add_argument("--session", help="session id (default: current)")
+    label.add_argument("--all", action="store_true", help="relabel every stored session")
+    label.add_argument("--cmd", help="labeler command reading the prompt on stdin (default: $EPISODIC_LABELER_CMD or claude -p haiku; needs ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN for the default)")
+    label.add_argument("--timeout", type=int, default=120)
+    label.add_argument("--save", action="store_true", help="persist the relabeled episode(s)")
+    label.add_argument("--store", help="path to a project store to label (default: current directory), enables self-capture of any repo")
+    label.add_argument("--raw", action="store_true", help="print the raw labeler output for one session and exit (diagnostic)")
+    label.set_defaults(func=cmd_label)
+
+    segment = sub.add_parser("segment", help="split a session into attempt-scoped sub-trajectories (child episodes)")
+    segment.add_argument("--session", help="session id (default: current)")
+    segment.add_argument("--label", action="store_true", help="also mine feedback per sub-trajectory via the LLM labeler")
+    segment.add_argument("--cmd", help="labeler command when --label is set")
+    segment.add_argument("--timeout", type=int, default=120)
+    segment.add_argument("--store", help="path to a project store (default: current directory)")
+    segment.add_argument("--save", action="store_true", help="persist the child episodes")
+    segment.set_defaults(func=cmd_segment)
 
     schema = sub.add_parser("schema", help="print or dump the CodingEpisode JSON Schema")
     schema.add_argument("schema_command", nargs="?", default="print", choices=["print", "dump"])
