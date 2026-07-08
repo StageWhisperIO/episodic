@@ -7,10 +7,21 @@ from ..core.normalize import event_from_hook
 
 FINALIZE_HOOKS = {"SessionEnd", "Stop"}
 LIGHT_HOOKS = {"PreToolUse", "PostToolUse", "UserPromptSubmit"}
+AUTO_LABEL_DISABLED = {"0", "false", "no", "off", ""}
 
 
 def _source():
     return os.environ.get("EPISODIC_AGENT") or os.environ.get("EPISODIC_SOURCE") or "claude-code"
+
+
+def _auto_label_generate(hook):
+    if hook != "SessionEnd":
+        return None
+    if os.environ.get("EPISODIC_AUTO_LABEL", "").lower() in AUTO_LABEL_DISABLED:
+        return None
+    from ..core import feedback
+
+    return feedback.command_generate(timeout=int(os.environ.get("EPISODIC_LABEL_TIMEOUT", "60")))
 
 
 def ingest(payload):
@@ -31,7 +42,7 @@ def ingest(payload):
     if hook in FINALIZE_HOOKS:
         from ..service import finalize_session
 
-        finalize_session(session_id, cwd)
+        finalize_session(session_id, cwd, generate=_auto_label_generate(hook))
 
     return event
 

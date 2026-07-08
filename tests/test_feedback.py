@@ -95,6 +95,21 @@ def test_reward_confidence_weights_mined_feedback():
     assert abs(rv["human_label"] - ((-1.0 * 0.5 + 1.0 * 1.0) / 1.5)) < 1e-3
 
 
+def test_auto_label_generate_gating(monkeypatch):
+    from episodic.collector import hook
+
+    monkeypatch.delenv("EPISODIC_AUTO_LABEL", raising=False)
+    assert hook._auto_label_generate("SessionEnd") is None
+    assert hook._auto_label_generate("Stop") is None
+
+    monkeypatch.setenv("EPISODIC_AUTO_LABEL", "1")
+    assert hook._auto_label_generate("Stop") is None
+    assert callable(hook._auto_label_generate("SessionEnd"))
+
+    monkeypatch.setenv("EPISODIC_AUTO_LABEL", "off")
+    assert hook._auto_label_generate("SessionEnd") is None
+
+
 def test_reward_outcome_hint_only_when_open():
     open_ep = new_episode(id="ep_o")
     open_ep["outcome_hint"] = {"success": "yes", "confidence": 1.0, "source": "mined"}

@@ -49,6 +49,14 @@ of these ways:
 Everything runs out-of-band with `EPISODIC_DISABLE=1` set, so the labeler's own model calls are not
 re-captured.
 
+**Auto-labeling on session end.** Set `EPISODIC_AUTO_LABEL=1` (env / settings.json) to label
+automatically when a session finalizes. It runs on the `SessionEnd` hook only — never on per-turn
+`Stop`, which would cost a model call every turn. It is non-blocking (a failed/unauthenticated labeler
+is swallowed and yields zero labels, never breaking finalize), timeout-bounded
+(`EPISODIC_LABEL_TIMEOUT`, default 60s), and recursion-guarded (its own `claude -p` runs with
+`EPISODIC_DISABLE=1`). The same auth requirement applies: without a token/API key in the hook env it is
+a fast no-op. Disable with `EPISODIC_AUTO_LABEL=0`.
+
 ## 1. Implicit feedback mining → `human_feedback` + `labels` (start here)
 
 The signal already exists as text; this is post-processing, no new capture plumbing.

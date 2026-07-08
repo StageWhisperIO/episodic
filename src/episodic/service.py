@@ -71,14 +71,14 @@ def _has_content(episode):
     return bool(episode["steps"] or episode["commands"] or episode["diffs"] or episode["tests"])
 
 
-def finalize_session(session_id=None, start=None):
+def finalize_session(session_id=None, start=None, generate=None):
     session_id = resolve_session_id(session_id, start)
     if not session_id:
         return None
     session = store.get_session(session_id, start)
     if not session["events"] and not session["meta"]:
         return None
-    episode = build_episode(session)
+    episode = build_episode(session, generate=generate)
     if not _has_content(episode):
         existing = store.get_episode(episode["id"], start)
         if existing is not None and _has_content(existing):
