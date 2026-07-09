@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from ..schema import new_episode, new_event, default_stats
-from . import gitinfo, diffparse, testdetect, reward, transcript, deploydetect
+from . import gitinfo, diffparse, testdetect, reward, transcript, deploydetect, validity
 from .normalize import MAX_RESPONSE_CHARS
 from .ids import episode_id_from_session
 
@@ -389,4 +389,5 @@ def build_episode(session, generate=None):
         labels.add("blocked_on_env")
     episode["labels"] = sorted(labels)
     episode["reward_vector"] = reward.reward_vector(episode)
+    episode["validity"] = validity.assess(episode)
     return episode

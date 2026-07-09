@@ -345,6 +345,48 @@ def cmd_segment(args):
     return 0
 
 
+def cmd_audit(args):
+    from collections import Counter
+    from .core import validity, feedback
+
+    start = args.store
+    generate = feedback.command_generate(args.cmd, timeout=args.timeout) if args.validate else None
+    episodes = store.load_episodes(start)
+    if not episodes:
+        _fail("no stored episodes to audit")
+
+    trust_counts = Counter()
+    category_counts = Counter()
+    low = []
+    for episode in episodes:
+        result = validity.assess(episode, generate)
+        trust_counts[result["trust"]] += 1
+        for category in result["categories"]:
+            category_counts[category] += 1
+        if result["trust"] == "low":
+            low.append((episode["id"], result))
+        if args.save:
+            episode["validity"] = result
+            store.save_episode(episode, start)
+
+    total = len(episodes)
+    broken = trust_counts["low"]
+    print(f"audited {total} episode(s){'  (LLM-validated)' if generate else ''}")
+    print(f"trust: high={trust_counts['high']} medium={trust_counts['medium']} low={trust_counts['low']}")
+    print(f"BROKEN (low-trust / noisy reward): {broken}/{total} = {round(100.0 * broken / total, 1)}%")
+    print("categories:")
+    for category, count in category_counts.most_common():
+        print(f"   {category}: {count}")
+    if low:
+        print("low-trust episodes:")
+        for episode_id, result in low[:args.limit]:
+            codes = ",".join(flag["code"] for flag in result["flags"])
+            print(f"   {episode_id} [{result['severity']}] {result['categories']} :: {codes}")
+    if args.save:
+        print("saved validity onto episodes.")
+    return 0
+
+
 def cmd_schema(args):
     if args.schema_command == "dump":
         target = paths.resolve_base() / "schemas" / "episode.schema.json"
@@ -588,6 +630,15 @@ def build_parser():
     segment.add_argument("--store", help="path to a project store (default: current directory)")
     segment.add_argument("--save", action="store_true", help="persist the child episodes")
     segment.set_defaults(func=cmd_segment)
+
+    audit = sub.add_parser("audit", help="reward-quality audit: flag episodes whose reward is untrustworthy (signal vs noise)")
+    audit.add_argument("--validate", action="store_true", help="also run the LLM validator on each episode (agent-assisted)")
+    audit.add_argument("--cmd", help="labeler command when --validate is set")
+    audit.add_argument("--timeout", type=int, default=120)
+    audit.add_argument("--store", help="path to a project store (default: current directory)")
+    audit.add_argument("--limit", type=int, default=15, help="max low-trust episodes to list")
+    audit.add_argument("--save", action="store_true", help="persist the computed validity onto each episode")
+    audit.set_defaults(func=cmd_audit)
 
     schema = sub.add_parser("schema", help="print or dump the CodingEpisode JSON Schema")
     schema.add_argument("schema_command", nargs="?", default="print", choices=["print", "dump"])

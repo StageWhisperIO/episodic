@@ -70,7 +70,13 @@ def segment_episode(ep, history_budget=SFT_HISTORY_BUDGET):
     return examples
 
 
+def is_trusted(ep):
+    return ((ep.get("validity") or {}).get("trust") or "high") != "low"
+
+
 def is_good(ep):
+    if not is_trusted(ep):
+        return False
     rv = ep.get("reward_vector") or {}
     if (rv.get("composite") or 0.0) >= 0.5:
         return True

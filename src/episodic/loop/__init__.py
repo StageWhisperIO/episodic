@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import store, exporters, trainers, replay, paths
-from ..exporters import is_bad
+from ..exporters import is_bad, is_trusted
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -31,7 +31,7 @@ def _hash_frac(episode_id, seed):
 
 def select_good(episodes, min_composite):
     for episode in episodes:
-        if _composite(episode) >= min_composite and not is_bad(episode):
+        if _composite(episode) >= min_composite and not is_bad(episode) and is_trusted(episode):
             yield episode
 
 

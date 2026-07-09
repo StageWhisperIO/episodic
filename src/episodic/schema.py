@@ -140,6 +140,7 @@ def new_episode(id, agent="claude-code", intent="", repo_state=None, created_at=
         "diff_source": "unknown",
         "outcome_hint": None,
         "deployments": [],
+        "validity": None,
     }
 
 
@@ -330,6 +331,27 @@ EPISODE_SCHEMA = {
                     "exit_code": {"type": ["integer", "null"]},
                     "verified": {"type": ["boolean", "null"]},
                     "reconstructed": {"type": "boolean"},
+                },
+            },
+        },
+        "validity": {
+            "type": ["object", "null"],
+            "properties": {
+                "trust": {"type": "string"},
+                "severity": {"type": ["string", "null"]},
+                "source": {"type": "string"},
+                "categories": {"type": "array", "items": {"type": "string"}},
+                "flags": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "category": {"type": "string"},
+                            "severity": {"type": "string"},
+                            "evidence": {"type": "string"},
+                        },
+                    },
                 },
             },
         },
