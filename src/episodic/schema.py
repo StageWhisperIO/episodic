@@ -141,6 +141,7 @@ def new_episode(id, agent="claude-code", intent="", repo_state=None, created_at=
         "outcome_hint": None,
         "deployments": [],
         "validity": None,
+        "labeler_error": None,
     }
 
 
@@ -334,6 +335,7 @@ EPISODE_SCHEMA = {
                 },
             },
         },
+        "labeler_error": {"type": ["string", "null"]},
         "validity": {
             "type": ["object", "null"],
             "properties": {

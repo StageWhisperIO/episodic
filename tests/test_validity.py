@@ -95,3 +95,68 @@ def test_assess_merges_llm_and_persists_via_build():
     episode = build_episode(session)
     assert episode["validity"]["trust"] in ("high", "medium", "low")
     assert validate_episode(episode) == []
+
+
+def test_merge_stricter_trust_wins_and_flags_union():
+    persisted = {
+        "trust": "low",
+        "flags": [{"code": "a", "category": validity.CONTRADICTION, "severity": "high", "evidence": "e"}],
+        "categories": [validity.CONTRADICTION],
+        "severity": "high",
+        "source": "rules+llm",
+    }
+    rules = {"trust": "high", "flags": [], "categories": [], "severity": None, "source": "rules"}
+    merged = validity.merge(persisted, rules)
+    assert merged["trust"] == "low"
+    assert merged["severity"] == "high"
+    assert len(merged["flags"]) == 1
+    assert validity.CONTRADICTION in merged["categories"]
+
+
+def test_merge_dedupes_identical_flags_and_unions_distinct_ones():
+    shared_flag = {"code": "a", "category": validity.LOW_COVERAGE, "severity": "medium", "evidence": "e"}
+    persisted = {"trust": "medium", "flags": [shared_flag], "categories": [validity.LOW_COVERAGE],
+                 "severity": "medium", "source": "rules"}
+    rules = {"trust": "medium", "flags": [shared_flag, {"code": "b", "category": validity.MISLEADING,
+             "severity": "medium", "evidence": "f"}], "categories": [validity.LOW_COVERAGE, validity.MISLEADING],
+             "severity": "medium", "source": "rules"}
+    merged = validity.merge(persisted, rules)
+    assert len(merged["flags"]) == 2
+    assert merged["categories"] == sorted([validity.LOW_COVERAGE, validity.MISLEADING])
+
+
+def test_merge_none_passthrough():
+    result = {"trust": "medium", "flags": [], "categories": [], "severity": "medium", "source": "rules"}
+    assert validity.merge(None, result) == result
+    assert validity.merge(result, None) == result
+
+
+def test_audit_verdict_persisted_to_session_meta_survives_finalize_and_renormalize(tmp_path, monkeypatch):
+    from episodic import cli, service, store
+    from episodic.core import feedback
+    from episodic.schema import new_event as ne
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    session_id = "sess-audit-persist"
+    store.write_meta(session_id, {"cwd": str(tmp_path), "repo_state": {"root": None}})
+    store.append_event(ne(session_id, "session_start", data={"cwd": str(tmp_path)}))
+    store.append_event(ne(session_id, "shell_command", data={
+        "command": "pytest -q", "response": "3 passed in 0.1s", "exit_code": 0, "cwd": str(tmp_path)}))
+
+    episode = service.finalize_session(session_id)
+    assert episode["validity"]["trust"] != "low"
+
+    fake_verdict = ('{"trustworthy":false,"categories":["low_coverage_tests"],'
+                     '"severity":"high","confidence":0.9,"rationale":"fake"}')
+    monkeypatch.setattr(feedback, "command_generate", lambda cmd=None, timeout=120: (lambda prompt: fake_verdict))
+
+    rc = cli.main(["audit", "--validate", "--save"])
+    assert rc == 0
+    assert store.get_episode(episode["id"])["validity"]["trust"] == "low"
+
+    refinalized = service.finalize_session(session_id)
+    assert refinalized["validity"]["trust"] == "low"
+
+    rebuilt = service.renormalize()
+    assert episode["id"] in rebuilt
+    assert store.get_episode(episode["id"])["validity"]["trust"] == "low"

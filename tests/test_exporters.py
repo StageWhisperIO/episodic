@@ -150,3 +150,40 @@ def test_export_creates_out_dir(episodes, tmp_path):
     result = exporters.export(episodes, "jsonl", new_dir)
     assert new_dir.exists()
     assert result["out_dir"] == str(new_dir)
+
+
+@pytest.mark.parametrize("fmt", ["jsonl", "sft", "dpo", "reward", "rlds", "wm"])
+def test_export_out_dash_streams_to_stdout_and_creates_no_dir(episodes, tmp_path, monkeypatch, capsys, fmt):
+    monkeypatch.chdir(tmp_path)
+    result = exporters.export(episodes, fmt, "-")
+    captured = capsys.readouterr()
+
+    rows = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    assert len(rows) == result["count"]
+    assert result["files"] == ["-"]
+    assert result["out_dir"] == "-"
+    assert not (tmp_path / "-").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_out_dash_parquet_raises_clear_error(episodes):
+    with pytest.raises(ValueError, match="stdout"):
+        exporters.export(episodes, "parquet", "-")
+
+
+def test_cli_export_out_dash_prints_only_jsonl_on_stdout(tmp_path, monkeypatch, capsys):
+    from episodic.cli import main
+    from episodic.testing import populate_store
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    populate_store(4, seed=1)
+
+    rc = main(["export-episode", "--all", "--format", "jsonl", "--out", "-"])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    rows = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    assert len(rows) == 4
+    assert "wrote" not in captured.out
+    assert not (tmp_path / "-").exists()

@@ -9,6 +9,7 @@ HINT = (
     "(https://tinker-console.thinkingmachines.ai)."
 )
 DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
+DEFAULT_SAMPLER_TTL_SECONDS = 7 * 24 * 3600
 
 
 def _require_tinker(name):
@@ -65,28 +66,49 @@ def _mean_loss(metrics, active_tokens):
     return metrics.get("loss:sum", 0.0) / max(active_tokens, 1.0)
 
 
+def _open_training(name, config):
+    _require_tinker(name)
+    import tinker
+    from tinker import types
+
+    model = config.get("model", DEFAULT_MODEL)
+    rank = config.get("lora_rank", 32)
+    init_state = config.get("init_state")
+
+    service = tinker.ServiceClient()
+    if init_state:
+        training = service.create_training_client_from_state(init_state)
+    else:
+        training = service.create_lora_training_client(base_model=model, rank=rank)
+    return service, training, types, model, rank
+
+
+def _checkpoint(training, state_name, sampler_name, sampler_ttl_seconds=None):
+    state = training.save_state(name=state_name, overwrite=True).result()
+    sampler = training.save_weights_for_sampler(name=sampler_name, ttl_seconds=sampler_ttl_seconds).result()
+    return {
+        "state_path": state.path,
+        "sampler_path": sampler.path,
+        "sampler_ttl_seconds": sampler_ttl_seconds,
+    }
+
+
 class TinkerSFTTrainer:
     name = "tinker-sft"
     consumes = ("sft",)
-    version = "1"
+    version = "2"
 
     def train(self, dataset_path, out_dir, config):
-        _require_tinker(self.name)
-        import tinker
-        from tinker import types
+        service, training, types, model, rank = _open_training(self.name, config)
 
-        model = config.get("model", DEFAULT_MODEL)
         epochs = config.get("epochs", 1)
         batch_size = config.get("batch_size", 4)
         learning_rate = config.get("learning_rate", 1e-4)
-        rank = config.get("lora_rank", 32)
 
         rows = _read_rows(dataset_path)
         if config.get("max_rows"):
             rows = rows[:config["max_rows"]]
 
-        service = tinker.ServiceClient()
-        training = service.create_lora_training_client(base_model=model, rank=rank)
         tokenizer = training.get_tokenizer()
 
         built = []
@@ -111,9 +133,7 @@ class TinkerSFTTrainer:
                 losses.append(_mean_loss(forward.metrics, active))
                 step += 1
 
-        state = training.save_state(name="episodic-sft", overwrite=True).result()
-        sampler = training.save_weights_for_sampler(name=f"episodic-sft-{step}").result()
-        return {
+        result = {
             "backend": "tinker",
             "base_model": model,
             "method": "lora",
@@ -124,9 +144,11 @@ class TinkerSFTTrainer:
             "final_loss": losses[-1] if losses else None,
             "mean_loss": sum(losses) / len(losses) if losses else None,
             "loss_curve": losses,
-            "state_path": state.path,
-            "sampler_path": sampler.path,
         }
+        result.update(_checkpoint(
+            training, "episodic-sft", f"episodic-sft-{step}",
+            config.get("sampler_ttl_seconds", DEFAULT_SAMPLER_TTL_SECONDS)))
+        return result
 
 
 def _grpo_prompts(rows):
@@ -191,15 +213,11 @@ def _grpo_datum(types, prompt_ids, completion_tokens, completion_logprobs, advan
 class TinkerGRPOTrainer:
     name = "tinker-grpo"
     consumes = ("sft",)
-    version = "1"
+    version = "2"
 
     def train(self, dataset_path, out_dir, config):
-        _require_tinker(self.name)
-        import tinker
-        from tinker import types
+        service, training, types, model, _rank = _open_training(self.name, config)
 
-        model = config.get("model", DEFAULT_MODEL)
-        rank = config.get("lora_rank", 32)
         group_size = config.get("group_size", 8)
         learning_rate = config.get("learning_rate", 1e-5)
         max_tokens = config.get("max_tokens", 128)
@@ -214,11 +232,6 @@ class TinkerGRPOTrainer:
             raise ValueError("tinker-grpo: no prompts (need SFT rows with a user turn)")
         score = _resolve_reward(config)
 
-        service = tinker.ServiceClient()
-        if init_state:
-            training = service.create_training_client_from_state(init_state)
-        else:
-            training = service.create_lora_training_client(base_model=model, rank=rank)
         tokenizer = training.get_tokenizer()
 
         chunks = list(_batches(prompts, prompts_per_step))
@@ -226,9 +239,10 @@ class TinkerGRPOTrainer:
             chunks = chunks[:config["max_steps"]]
 
         history = []
-        sampler_ttl = config.get("sampler_ttl_seconds", 3600)
+        sampler_ttl_seconds = config.get("sampler_ttl_seconds", DEFAULT_SAMPLER_TTL_SECONDS)
+        step_sampler_ttl = sampler_ttl_seconds if sampler_ttl_seconds is not None else 3600
         for step, chunk in enumerate(chunks):
-            sampler = training.save_weights_for_sampler(name=f"grpo-{step}", ttl_seconds=sampler_ttl).result()
+            sampler = training.save_weights_for_sampler(name=f"grpo-{step}", ttl_seconds=step_sampler_ttl).result()
             sampling = service.create_sampling_client(model_path=sampler.path)
             data = []
             step_rewards = []
@@ -267,6 +281,7 @@ class TinkerGRPOTrainer:
                 "reward_mean": (sum(step_rewards) / len(step_rewards)) if step_rewards else None,
                 "reward_max": max(step_rewards) if step_rewards else None,
                 "active_groups": active_groups,
+                "sampler_path": sampler.path,
             }
             if data:
                 forward = training.forward_backward(data, "importance_sampling").result()
@@ -277,9 +292,7 @@ class TinkerGRPOTrainer:
                 entry["updated"] = False
             history.append(entry)
 
-        state = training.save_state(name="episodic-grpo", overwrite=True).result()
-        sampler = training.save_weights_for_sampler(name="episodic-grpo-final").result()
-        return {
+        result = {
             "backend": "tinker",
             "base_model": model,
             "method": "grpo",
@@ -289,9 +302,9 @@ class TinkerGRPOTrainer:
             "steps": len(history),
             "updates": sum(1 for entry in history if entry.get("updated")),
             "history": history,
-            "state_path": state.path,
-            "sampler_path": sampler.path,
         }
+        result.update(_checkpoint(training, "episodic-grpo", "episodic-grpo-final", sampler_ttl_seconds))
+        return result
 
 
 register(TinkerSFTTrainer())

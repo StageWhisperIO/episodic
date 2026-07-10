@@ -225,6 +225,31 @@ def validate(episode, generate, passes=3):
     }
 
 
+def merge(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    trust = _min_trust(a["trust"], b["trust"])
+    flags = list(a.get("flags") or [])
+    seen = {tuple(sorted(flag.items())) for flag in flags}
+    for flag in b.get("flags") or []:
+        key = tuple(sorted(flag.items()))
+        if key not in seen:
+            flags.append(flag)
+            seen.add(key)
+    categories = sorted(set(a.get("categories") or []) | set(b.get("categories") or []))
+    severities = [level for level in (a.get("severity"), b.get("severity")) if level]
+    severity = max(severities, key=lambda level: _SEVERITY_RANK[level]) if severities else None
+    sources = [source for source in (a.get("source"), b.get("source")) if source]
+    source = "+".join(sorted(set(sources))) if sources else "rules"
+    merged = {"trust": trust, "flags": flags, "categories": categories, "severity": severity, "source": source}
+    llm = a.get("llm") or b.get("llm")
+    if llm is not None:
+        merged["llm"] = llm
+    return merged
+
+
 def assess(episode, generate=None, passes=3):
     flags = flag_episode(episode)
     trust = trust_tier(flags)

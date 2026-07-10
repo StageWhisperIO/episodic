@@ -3,6 +3,7 @@ import json
 import pytest
 
 from episodic import trainers
+from episodic.trainers.trl import resolve_grpo_generations
 
 
 def _write_sft(path):
@@ -78,6 +79,54 @@ def test_trl_unavailable_is_graceful(tmp_path):
     with pytest.raises(trainers.TrainerUnavailable) as info:
         trainers.train("trl-sft", str(dataset), str(tmp_path / "out"), {}, cwd=str(tmp_path))
     assert "episodic[trl]" in info.value.hint
+
+
+def test_resolve_grpo_generations_tiny_dataset_default_config():
+    num_generations, generation_batch_size = resolve_grpo_generations({}, dataset_rows=1)
+    assert num_generations == 2
+    assert generation_batch_size % num_generations == 0
+    assert generation_batch_size % 1 == 0
+
+
+def test_resolve_grpo_generations_never_below_two():
+    num_generations, generation_batch_size = resolve_grpo_generations(
+        {"num_generations": 1}, dataset_rows=None)
+    assert num_generations == 2
+    assert generation_batch_size % num_generations == 0
+
+
+def test_resolve_grpo_generations_caps_to_dataset_rows():
+    num_generations, generation_batch_size = resolve_grpo_generations(
+        {"num_generations": 8, "batch_size": 4}, dataset_rows=2)
+    assert num_generations == 2
+    assert generation_batch_size % num_generations == 0
+    assert generation_batch_size % 4 == 0
+
+
+def test_resolve_grpo_generations_respects_configured_when_it_fits():
+    num_generations, generation_batch_size = resolve_grpo_generations(
+        {"num_generations": 3, "batch_size": 2, "grad_accum": 2}, dataset_rows=100)
+    assert num_generations == 3
+    assert generation_batch_size % num_generations == 0
+    assert generation_batch_size % 2 == 0
+
+
+def test_resolve_grpo_generations_rejects_bad_config():
+    for bad in (0, -3, "4", True, 1.5, None):
+        with pytest.raises(ValueError, match="num_generations"):
+            resolve_grpo_generations({"num_generations": bad}, dataset_rows=10)
+
+
+def test_resolve_grpo_generations_always_divides_evenly_sweep():
+    for configured in range(1, 9):
+        for batch_size in range(1, 5):
+            for grad_accum in range(1, 4):
+                for rows in (None, 1, 2, 5, 50):
+                    config = {"num_generations": configured, "batch_size": batch_size, "grad_accum": grad_accum}
+                    num_generations, generation_batch_size = resolve_grpo_generations(config, rows)
+                    assert num_generations >= 2
+                    assert generation_batch_size % num_generations == 0
+                    assert generation_batch_size % (batch_size * 1) == 0
 
 
 def test_unsloth_unavailable_is_graceful(tmp_path):

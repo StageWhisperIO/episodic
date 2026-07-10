@@ -58,10 +58,3 @@ def bash_records(path):
                 if command is not None:
                     records[command].append(_record(block))
     return records
-
-
-def bash_outcomes(path):
-    return {
-        command: deque(record["is_error"] for record in records)
-        for command, records in bash_records(path).items()
-    }

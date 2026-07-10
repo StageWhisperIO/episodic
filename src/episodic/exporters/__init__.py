@@ -1,7 +1,10 @@
 import json
+import sys
 from pathlib import Path
 
 FORMATS = ("sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet")
+
+STDOUT = "-"
 
 _GOOD_LABELS = {"useful", "accepted_as_is", "accepted_after_edits"}
 _BAD_LABELS = {"wrong"}
@@ -9,7 +12,16 @@ _GOOD_STATUSES = {"accepted", "merged"}
 _BAD_STATUSES = {"failed", "reverted"}
 
 
+def _out_path(out_dir, filename):
+    return STDOUT if out_dir == STDOUT else out_dir / filename
+
+
 def write_jsonl(path, rows):
+    if path == STDOUT:
+        for row in rows:
+            sys.stdout.write(json.dumps(row, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -109,7 +121,7 @@ def _composite(ep):
 
 
 def _export_jsonl(episodes, out_dir):
-    path = out_dir / "episodes.jsonl"
+    path = _out_path(out_dir, "episodes.jsonl")
     write_jsonl(path, episodes)
     return {"files": [str(path)], "count": len(episodes)}
 
@@ -119,7 +131,7 @@ def _export_sft(episodes, out_dir):
     rows = []
     for ep in good:
         rows.extend(segment_episode(ep))
-    path = out_dir / "sft.jsonl"
+    path = _out_path(out_dir, "sft.jsonl")
     write_jsonl(path, rows)
     return {"files": [str(path)], "count": len(rows), "episodes": len(good)}
 
@@ -162,7 +174,7 @@ def _export_dpo(episodes, out_dir):
             },
         })
 
-    path = out_dir / "dpo.jsonl"
+    path = _out_path(out_dir, "dpo.jsonl")
     write_jsonl(path, rows)
     return {"files": [str(path)], "count": len(rows), "pairs": len(rows)}
 
@@ -176,7 +188,7 @@ def _export_reward(episodes, out_dir):
             "reward_vector": ep.get("reward_vector"),
             "scalar_reward": _composite(ep),
         })
-    path = out_dir / "reward.jsonl"
+    path = _out_path(out_dir, "reward.jsonl")
     write_jsonl(path, rows)
     return {"files": [str(path)], "count": len(rows)}
 
@@ -207,7 +219,7 @@ def _export_rlds(episodes, out_dir):
                 "discount": 0.0 if is_last else 1.0,
             })
         rows.append({"episode_id": ep["id"], "steps": rlds_steps})
-    path = out_dir / "rlds.jsonl"
+    path = _out_path(out_dir, "rlds.jsonl")
     write_jsonl(path, rows)
     return {"files": [str(path)], "count": len(rows)}
 
@@ -216,7 +228,7 @@ def _export_wm(episodes, out_dir):
     from episodic.worldmodel import wm_samples, to_messages
 
     rows = [to_messages(sample) for sample in wm_samples(episodes)]
-    path = out_dir / "wm.jsonl"
+    path = _out_path(out_dir, "wm.jsonl")
     write_jsonl(path, rows)
     return {"files": [str(path)], "count": len(rows), "turns": len(rows)}
 
@@ -281,6 +293,13 @@ _EXPORTERS = {
 def export(episodes, fmt, out_dir):
     if fmt not in _EXPORTERS:
         raise ValueError(f"Unknown format {fmt!r}. Choose from: {FORMATS}")
+    if str(out_dir) == STDOUT:
+        if fmt == "parquet":
+            raise ValueError("parquet is a binary format and cannot be written to stdout; pass a real --out path")
+        result = _EXPORTERS[fmt](episodes, STDOUT)
+        result["format"] = fmt
+        result["out_dir"] = STDOUT
+        return result
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     result = _EXPORTERS[fmt](episodes, out_dir)

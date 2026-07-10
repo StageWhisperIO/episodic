@@ -14,6 +14,14 @@ def _source():
     return os.environ.get("EPISODIC_AGENT") or os.environ.get("EPISODIC_SOURCE") or "claude-code"
 
 
+def _label_timeout():
+    raw = os.environ.get("EPISODIC_LABEL_TIMEOUT", "60")
+    try:
+        return int(raw)
+    except ValueError:
+        return 60
+
+
 def _auto_label_generate(hook):
     if hook != "SessionEnd":
         return None
@@ -21,7 +29,7 @@ def _auto_label_generate(hook):
         return None
     from ..core import feedback
 
-    return feedback.command_generate(timeout=int(os.environ.get("EPISODIC_LABEL_TIMEOUT", "60")))
+    return feedback.command_generate(timeout=_label_timeout())
 
 
 def ingest(payload):
@@ -42,7 +50,11 @@ def ingest(payload):
     if hook in FINALIZE_HOOKS:
         from ..service import finalize_session
 
-        finalize_session(session_id, cwd, generate=_auto_label_generate(hook))
+        try:
+            generate = _auto_label_generate(hook)
+        except Exception:
+            generate = None
+        finalize_session(session_id, cwd, generate=generate)
 
     return event
 

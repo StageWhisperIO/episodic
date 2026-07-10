@@ -1,4 +1,5 @@
 import json
+import math
 
 from . import register, TrainerUnavailable
 
@@ -164,6 +165,22 @@ class TRLRewardTrainer:
         }
 
 
+def resolve_grpo_generations(config, dataset_rows, num_processes=1):
+    configured = config.get("num_generations", 4)
+    if isinstance(configured, bool) or not isinstance(configured, int) or configured < 1:
+        raise ValueError(f"num_generations must be a positive integer, got {configured!r}")
+
+    per_device_batch = config.get("batch_size", 1)
+    grad_accum = config.get("grad_accum", 1)
+    effective_batch = max(1, per_device_batch * num_processes * grad_accum)
+    cap = min(effective_batch, dataset_rows) if dataset_rows else effective_batch
+
+    num_generations = max(2, min(configured, max(1, cap)))
+    base = max(1, per_device_batch * num_processes)
+    generation_batch_size = base * num_generations // math.gcd(base, num_generations)
+    return num_generations, generation_batch_size
+
+
 class TRLGRPOTrainer:
     name = "trl-grpo"
     consumes = ("sft",)
@@ -179,6 +196,7 @@ class TRLGRPOTrainer:
         rows = _read_rows(dataset_path)
         dataset = Dataset.from_list([{"prompt": _prompt_from_messages(row["messages"])} for row in rows])
         reward_funcs = _resolve_reward_funcs(config)
+        num_generations, generation_batch_size = resolve_grpo_generations(config, len(rows))
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
@@ -187,7 +205,8 @@ class TRLGRPOTrainer:
 
         args = GRPOConfig(
             output_dir=out_dir,
-            num_generations=config.get("num_generations", 4),
+            num_generations=num_generations,
+            generation_batch_size=generation_batch_size,
             **_training_kwargs(config),
         )
         trainer = GRPOTrainer(

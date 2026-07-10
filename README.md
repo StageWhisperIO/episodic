@@ -143,9 +143,11 @@ preference pairs) → `trl-grpo` (policy RL driven by that reward model). The lo
 uses **real replay-eval reward** (it runs the model on held-out tasks and scores tests + diff
 overlap), not a proxy.
 
-> **Security:** the loop only clones repos and runs recorded test commands under `--execute` /
-> `"execute": true` — otherwise it just prints the plan. Untrusted episode-derived test commands run
-> without a shell; only your own `replay_cmd` template runs via a shell.
+> **Security:** without `--execute` / `"execute": true`, the loop only filters episodes and writes the
+> dataset file — it never invokes the trainer, clones a repo, or runs a test command; it just prints a
+> plan (trainer, dataset path/row count, config, replay-eval plan). `--execute` is what actually trains
+> and runs replay-eval. Untrusted episode-derived test commands run without a shell; only your own
+> `replay_cmd` template runs via a shell.
 >
 > **Closing the loop** (the model actually *runs* in the agent) is the open-model lane —
 > Codex `--oss` or a custom agent pointed at the tuned model dir — not hosted Claude Code.
@@ -230,6 +232,8 @@ type CodingEpisode = {
 | `episodic doctor [--json]` | end-to-end self-check on the install (synthetic store, no network) |
 | `episodic list` / `show ID [--validate]` | browse episodes |
 | `episodic dashboard [--port N]` | local web UI: browse + one-click labels |
+| `episodic train [dataset] --trainer T [--config]` | train on an exported dataset via a pluggable backend |
+| `episodic loop [--config] [--execute]` | filter → train → replay-eval → promote (plan-only unless `--execute`) |
 | `episodic schema dump` | regenerate `schemas/episode.schema.json` |
 
 ## Dataset formats
@@ -285,7 +289,7 @@ local-first. `link` talks to GitHub only when you ask; exporters write files onl
 ## Development
 
 ```bash
-PYTHONPATH=src python -m pytest tests -q     # 112 tests
+PYTHONPATH=src python -m pytest tests -q     # 267 tests
 python plugin-codex/test_codex.py            # codex mapping
 python rl-pipeline/test_pipeline.py          # pipeline stages
 episodic doctor                              # end-to-end install self-check

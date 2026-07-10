@@ -1,5 +1,6 @@
-wrote /Users/piotrmrzyglowski/Documents/projects/episodic/schemas/episode.schema.json
-ev/schemas/coding-episode.json",
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://episodic.dev/schemas/coding-episode.json",
   "title": "CodingEpisode",
   "type": "object",
   "required": [
@@ -201,6 +202,9 @@ ev/schemas/coding-episode.json",
           },
           "is_test": {
             "type": "boolean"
+          },
+          "reconstructed": {
+            "type": "boolean"
           }
         }
       }
@@ -246,6 +250,9 @@ ev/schemas/coding-episode.json",
           },
           "output_excerpt": {
             "type": "string"
+          },
+          "reconstructed": {
+            "type": "boolean"
           }
         }
       }
@@ -275,6 +282,27 @@ ev/schemas/coding-episode.json",
             ]
           },
           "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "evidence_step_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
             "type": [
               "string",
               "null"
@@ -417,6 +445,136 @@ ev/schemas/coding-episode.json",
     },
     "diff_source": {
       "type": "string"
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "segment_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "outcome_hint": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "success": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "deployments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ts",
+          "method",
+          "target_env"
+        ],
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "target_env": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verified": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reconstructed": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "labeler_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "validity": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "trust": {
+          "type": "string"
+        },
+        "severity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "category": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

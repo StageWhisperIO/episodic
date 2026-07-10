@@ -58,3 +58,22 @@ def test_finalize_creates_empty_episode_when_none_exists(tmp_path, monkeypatch):
     store.append_event(new_event(session_id, "session_start", data={"cwd": str(tmp_path)}))
     episode = service.finalize_session(session_id)
     assert episode is not None and episode["steps"] == []
+
+
+def test_finalize_session_saves_episode_despite_labeler_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    session_id = "sess-labeler-boom"
+    store.write_meta(session_id, {"cwd": str(tmp_path), "repo_state": {"root": None}})
+    store.append_event(new_event(session_id, "session_start", data={"cwd": str(tmp_path)}))
+    store.append_event(new_event(session_id, "user_prompt", data={"prompt": "fix the bug"}))
+
+    def _raising_generate(prompt):
+        raise RuntimeError("labeler command exited 1: Not logged in")
+
+    episode = service.finalize_session(session_id, generate=_raising_generate)
+    assert episode is not None
+    assert episode["steps"]
+    assert episode["labeler_error"] == "labeler command exited 1: Not logged in"
+
+    saved = store.get_episode(episode["id"])
+    assert saved is not None and saved["steps"]

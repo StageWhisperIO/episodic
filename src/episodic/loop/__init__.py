@@ -132,18 +132,26 @@ def run_loop(config, start=None):
     export_result = exporters.export(train, fmt, str(out / "dataset"))
     dataset_path = export_result["files"][0]
 
-    train_manifest = trainers.train(trainer_name, dataset_path, str(out / "candidate"), train_config, cwd=start)
-    candidate_model = (train_manifest.get("result") or {}).get("model_dir") or str(out / "candidate")
-
     if not execute:
+        candidate_model = str(out / "candidate")
+        plan = {
+            "trainer": trainer_name,
+            "dataset": dataset_path,
+            "dataset_rows": export_result.get("count"),
+            "train_config": train_config,
+            "candidate_model_dir": candidate_model,
+            "holdout_count": len(holdout_eval),
+            "runner_cmd": runner_cmd,
+            "note": "set execute=true to train and run replay-eval (clones repos and runs recorded test commands)",
+        }
         manifest = _manifest(
-            config, train, holdout, candidate_model, base_model, [], "dry_run", capped, executed=False,
-            plan={"holdout_count": len(holdout_eval), "runner_cmd": runner_cmd, "note":
-                  "set execute=true to run replay-eval (clones repos and runs recorded test commands)"},
+            config, train, holdout, None, base_model, [], "dry_run", capped, executed=False, plan=plan,
         )
-        manifest["train_manifest"] = train_manifest
         _write(out, manifest)
         return manifest
+
+    train_manifest = trainers.train(trainer_name, dataset_path, str(out / "candidate"), train_config, cwd=start)
+    candidate_model = (train_manifest.get("result") or {}).get("model_dir") or str(out / "candidate")
 
     scores = _evaluate(holdout_eval, candidate_model, base_model, runner_cmd, concurrency, start)
     paired = [row for row in scores if _finite(row["candidate"]) and _finite(row["base"])]

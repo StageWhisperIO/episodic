@@ -116,11 +116,12 @@ def _synth_shell_event(pre_event, command, record):
     )
 
 
-def _reconstruct_failed_commands(events):
+def _reconstruct_failed_commands(events, records=None):
     path = _transcript_path(events)
     if not path:
         return events
-    records = transcript.bash_records(path)
+    if records is None:
+        records = transcript.bash_records(path)
     pre_by_command = defaultdict(list)
     post_by_command = defaultdict(int)
     for event in events:
@@ -151,22 +152,23 @@ def _reconstruct_failed_commands(events):
     return result
 
 
-def _apply_transcript_exit_codes(events):
+def _apply_transcript_exit_codes(events, records=None):
     path = _transcript_path(events)
     if not path:
         return
-    outcomes = transcript.bash_outcomes(path)
+    if records is None:
+        records = transcript.bash_records(path)
     by_command = defaultdict(list)
     for event in events:
         if event["type"] == "shell_command":
             by_command[event["data"].get("command", "")].append(event)
     for command, group in by_command.items():
-        results = outcomes.get(command)
-        if results is None or len(results) != len(group):
+        entries = list(records.get(command) or [])
+        if len(entries) != len(group):
             continue
-        for event, is_error in zip(group, results):
+        for event, entry in zip(group, entries):
             if event["data"].get("exit_code") is None:
-                event["data"]["exit_code"] = 1 if is_error else 0
+                event["data"]["exit_code"] = entry["exit_code"]
 
 
 def _build_commands(events):
@@ -226,22 +228,31 @@ def _build_deployments(events):
 
 
 def _verify_deployments(episode):
-    negatives = {"wrong", "too_broad", "needed_human_rescue"}
-    negative_after = [
-        item["ts"] for item in episode["human_feedback"]
-        if item.get("source") == "mined" and item.get("label") in negatives and item.get("ts")
-    ]
+    outcome_positive = episode["outcome"]["status"] in ("merged", "accepted")
     for deployment in episode["deployments"]:
-        if deployment["verified"] is False:
+        if deployment["exit_code"] != 0:
             continue
-        if any(ts > deployment["ts"] for ts in negative_after):
-            deployment["verified"] = False
+        deploy_ts = deployment["ts"]
+        positive_after = outcome_positive or any(
+            item.get("label") in validity.POSITIVE_LABELS and item.get("ts") and item["ts"] > deploy_ts
+            for item in episode["human_feedback"]
+        )
+        negative_after = any(
+            item.get("label") in validity.NEGATIVE_LABELS and item.get("ts") and item["ts"] > deploy_ts
+            for item in episode["human_feedback"]
+        )
+        if positive_after and not negative_after:
+            deployment["verified"] = True
 
 
 def _relativize(path, base):
-    if base and path and path.startswith(base):
+    if not (base and path):
+        return path
+    real_base = os.path.realpath(base)
+    real_path = os.path.realpath(path) if os.path.isabs(path) else path
+    if real_path == real_base or real_path.startswith(real_base + os.sep):
         try:
-            return os.path.relpath(path, base)
+            return os.path.relpath(real_path, real_base)
         except ValueError:
             return path
     return path
@@ -272,6 +283,8 @@ def _build_diffs(repo_state, cwd, events, live=True):
     if live and git_ok and gitinfo.head_commit(root) == base_commit:
         touched = _touched_files(repo_state, cwd, events)
         parsed = diffparse.parse_unified_diff(gitinfo.working_diff(root, base_commit))
+        if not touched:
+            return parsed, "git-working-tree"
         scoped = [entry for entry in parsed if entry.get("file") in touched]
         if scoped:
             return scoped, "git-working-tree"
@@ -340,7 +353,8 @@ def _apply_mined_signal(episode, generate):
     from . import feedback as feedback_mod
     try:
         mined = feedback_mod.mine(episode, generate)
-    except Exception:
+    except Exception as exc:
+        episode["labeler_error"] = str(exc)
         return
     existing = {(item.get("label"), item.get("evidence_step_index")) for item in episode["human_feedback"]}
     for item in mined["feedback"]:
@@ -366,15 +380,17 @@ def build_episode(session, generate=None):
         repo_state=repo_state,
         created_at=meta.get("created_at"),
     )
-    events = _reconstruct_failed_commands(events)
-    _apply_transcript_exit_codes(events)
+    transcript_path = _transcript_path(events)
+    transcript_records = transcript.bash_records(transcript_path) if transcript_path else None
+    events = _reconstruct_failed_commands(events, transcript_records)
+    _apply_transcript_exit_codes(events, transcript_records)
     episode["steps"] = _build_steps(events)
     episode["commands"] = _build_commands(events)
     episode["tests"] = _build_tests(events)
     episode["diffs"], episode["diff_source"] = _build_diffs(
         repo_state, cwd, events, live=not meta.get("imported")
     )
-    episode["human_feedback"] = meta.get("human_feedback", [])
+    episode["human_feedback"] = list(meta.get("human_feedback") or [])
     episode["deployments"] = _build_deployments(events)
     episode["outcome"] = meta.get("outcome") or episode["outcome"]
     if generate is not None:
@@ -389,5 +405,7 @@ def build_episode(session, generate=None):
         labels.add("blocked_on_env")
     episode["labels"] = sorted(labels)
     episode["reward_vector"] = reward.reward_vector(episode)
-    episode["validity"] = validity.assess(episode)
+    rules_validity = validity.assess(episode)
+    persisted_validity = meta.get("audit_validity")
+    episode["validity"] = validity.merge(persisted_validity, rules_validity) if persisted_validity else rules_validity
     return episode

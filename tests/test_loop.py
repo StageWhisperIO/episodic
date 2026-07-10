@@ -132,7 +132,7 @@ def test_partition_streams_filter_and_split_in_one_pass():
     assert set(e["id"] for e in train).isdisjoint(e["id"] for e in holdout)
 
 
-def test_loop_dry_run_trains_but_does_not_execute(tmp_path, monkeypatch):
+def test_loop_dry_run_does_not_train_or_execute(tmp_path, monkeypatch):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
     origin, sha = _origin_repo(tmp_path)
     holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
@@ -140,16 +140,26 @@ def test_loop_dry_run_trains_but_does_not_execute(tmp_path, monkeypatch):
         store.save_episode(_episode(ep_id, origin, sha))
 
     config = {"trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
-              "min_composite": 0.0, "train_config": {"command": "true"},
+              "min_composite": 0.0, "train_config": {"command": "false"},
               "out": str(tmp_path / "loopout")}
     manifest = loop.run_loop(config)
 
     assert manifest["executed"] is False
     assert manifest["decision"] == "dry_run"
     assert manifest["scores"] == []
-    assert "train_manifest" in manifest
+    assert "train_manifest" not in manifest
+    assert manifest["candidate_model"] is None
+    assert not (tmp_path / "loopout" / "candidate").exists()
     assert set(manifest["holdout_ids"]) == set(holdout_ids)
     assert set(manifest["train_ids"]) == set(train_ids)
+
+    plan = manifest["plan"]
+    assert plan["trainer"] == "command"
+    assert plan["dataset"].endswith(".jsonl")
+    assert plan["dataset_rows"] > 0
+    assert plan["train_config"] == {"command": "false"}
+    assert plan["candidate_model_dir"].endswith("candidate")
+    assert plan["holdout_count"] == len(holdout_ids)
 
 
 def test_loop_string_false_execute_stays_dry_run(tmp_path, monkeypatch):
@@ -160,12 +170,13 @@ def test_loop_string_false_execute_stays_dry_run(tmp_path, monkeypatch):
         store.save_episode(_episode(ep_id, origin, sha))
 
     config = {"trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
-              "min_composite": 0.0, "train_config": {"command": "true"},
+              "min_composite": 0.0, "train_config": {"command": "false"},
               "execute": "false", "out": str(tmp_path / "lo")}
     manifest = loop.run_loop(config)
 
     assert manifest["executed"] is False
     assert manifest["decision"] == "dry_run"
+    assert "train_manifest" not in manifest
 
 
 def test_loop_executes_evaluates_and_promotes(tmp_path, monkeypatch):

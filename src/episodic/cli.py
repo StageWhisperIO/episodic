@@ -104,7 +104,10 @@ def cmd_export(args):
         _fail("no episodes to export")
     out = args.out or str(paths.exports_dir())
     result = exporters.export(episodes, args.format, out)
-    _print_json(result)
+    if out == "-":
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    else:
+        _print_json(result)
     return 0
 
 
@@ -290,6 +293,7 @@ def cmd_label(args):
         print(feedback._extract_json(result["stdout"]))
         return 0
 
+    failed = False
     for session_id in session_ids:
         if not session_id:
             continue
@@ -297,6 +301,11 @@ def cmd_label(args):
         if not session["events"]:
             continue
         episode = build_episode(session, generate=generate)
+        if episode.get("labeler_error"):
+            print(f"episodic: labeler failed for {episode['id']} ({session_id[:8]}): "
+                  f"{episode['labeler_error']}", file=sys.stderr)
+            failed = True
+            continue
         mined = [item for item in episode["human_feedback"] if item.get("source") == "mined"]
         hint = episode.get("outcome_hint") or {}
         rv = episode["reward_vector"]
@@ -317,6 +326,8 @@ def cmd_label(args):
             store.save_episode(episode, start)
     if args.save:
         print("saved.")
+    if failed:
+        raise SystemExit(1)
     return 0
 
 
@@ -333,7 +344,12 @@ def cmd_segment(args):
         _fail("session has no events")
     children = segment_mod.segment_session(session, generate=generate)
     print(f"{session_id[:8]} -> {len(children)} sub-trajectory(ies)")
+    failed = False
     for child in children:
+        if child.get("labeler_error"):
+            print(f"episodic: labeler failed for {child['id']}: {child['labeler_error']}", file=sys.stderr)
+            failed = True
+            continue
         rv = child["reward_vector"]
         print(f"   #{child['segment_index']} {child['id']} composite={rv['composite']} "
               f"steps={len(child['steps'])} tests={len(child['tests'])} deploys={len(child['deployments'])} "
@@ -342,18 +358,28 @@ def cmd_segment(args):
             store.save_episode(child, start)
     if args.save:
         print("saved.")
+    if failed:
+        raise SystemExit(1)
     return 0
 
 
 def cmd_audit(args):
     from collections import Counter
     from .core import validity, feedback
+    from .core.ids import episode_id_from_session
 
     start = args.store
     generate = feedback.command_generate(args.cmd, timeout=args.timeout) if args.validate else None
     episodes = store.load_episodes(start)
     if not episodes:
         _fail("no stored episodes to audit")
+
+    session_by_episode_id = {}
+    if args.save:
+        session_by_episode_id = {
+            episode_id_from_session(session_id): session_id
+            for session_id in store.list_sessions(start)
+        }
 
     trust_counts = Counter()
     category_counts = Counter()
@@ -368,6 +394,9 @@ def cmd_audit(args):
         if args.save:
             episode["validity"] = result
             store.save_episode(episode, start)
+            session_id = session_by_episode_id.get(episode["id"])
+            if session_id:
+                store.update_meta(session_id, {"audit_validity": result}, start)
 
     total = len(episodes)
     broken = trust_counts["low"]
@@ -392,7 +421,7 @@ def cmd_schema(args):
         target = paths.resolve_base() / "schemas" / "episode.schema.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(EPISODE_SCHEMA, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {target}")
+        print(f"wrote {target}", file=sys.stderr)
     else:
         _print_json(EPISODE_SCHEMA)
     return 0

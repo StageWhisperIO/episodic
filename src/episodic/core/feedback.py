@@ -17,7 +17,7 @@ def _clamp01(value):
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return 0.5
     return max(0.0, min(1.0, number))
 
 
@@ -86,32 +86,32 @@ def _extract_json(text):
     if not text:
         return None
     start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:index + 1])
-                except ValueError:
-                    return None
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:index + 1])
+                    except ValueError:
+                        break
+        start = text.find("{", start + 1)
     return None
 
 
@@ -119,7 +119,8 @@ def mine(episode, generate):
     data = _extract_json(generate(build_prompt(episode))) or {}
     ts_by_index = {step.get("index"): step.get("ts") for step in episode.get("steps", [])}
     fallback_ts = episode.get("created_at") or now_iso()
-    model = os.environ.get("EPISODIC_LABELER_MODEL", DEFAULT_MODEL)
+    env_model = os.environ.get("EPISODIC_LABELER_MODEL")
+    model = env_model or getattr(generate, "command", None) or DEFAULT_MODEL
 
     feedback = []
     for item in data.get("feedback") or []:
@@ -154,25 +155,32 @@ def _resolve_command(command):
     return command or os.environ.get("EPISODIC_LABELER_CMD") or DEFAULT_LABELER_CMD
 
 
+def _run_labeler(resolved, prompt, timeout):
+    env = dict(os.environ, EPISODIC_DISABLE="1")
+    return subprocess.run(
+        resolved, shell=True, input=prompt, text=True,
+        capture_output=True, timeout=timeout, env=env,
+    )
+
+
 def command_generate(command=None, timeout=120):
     resolved = _resolve_command(command)
 
     def generate(prompt):
-        env = dict(os.environ, EPISODIC_DISABLE="1")
-        proc = subprocess.run(
-            resolved, shell=True, input=prompt, text=True,
-            capture_output=True, timeout=timeout, env=env,
-        )
+        proc = _run_labeler(resolved, prompt, timeout)
+        if proc.returncode != 0:
+            snippet = (proc.stderr or proc.stdout or "").strip()[:200]
+            raise RuntimeError(
+                f"labeler command {resolved!r} exited {proc.returncode}: {snippet}"
+            )
         return proc.stdout
 
+    generate.command = resolved
     return generate
 
 
 def probe(prompt, command=None, timeout=120):
-    env = dict(os.environ, EPISODIC_DISABLE="1")
-    proc = subprocess.run(
-        _resolve_command(command), shell=True, input=prompt, text=True,
-        capture_output=True, timeout=timeout, env=env,
-    )
-    return {"command": _resolve_command(command), "stdout": proc.stdout,
+    resolved = _resolve_command(command)
+    proc = _run_labeler(resolved, prompt, timeout)
+    return {"command": resolved, "stdout": proc.stdout,
             "stderr": proc.stderr, "code": proc.returncode}

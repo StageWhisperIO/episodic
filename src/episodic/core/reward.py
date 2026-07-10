@@ -103,14 +103,19 @@ def _deploy_signal(episode):
 
 def _outcome_with_source(episode):
     if episode["outcome"]["status"] != "open":
-        return _outcome(episode), "authoritative"
-    deploy = _deploy_signal(episode)
-    if deploy is not None:
-        return deploy, "deploy"
-    hint = episode.get("outcome_hint")
-    if hint and hint.get("success") in HINT_SCORES:
-        return HINT_SCORES[hint["success"]] * _clamp(hint.get("confidence", 0.0)), "mined"
-    return _outcome(episode), "none"
+        score, source = _outcome(episode), "authoritative"
+    else:
+        deploy = _deploy_signal(episode)
+        hint = episode.get("outcome_hint")
+        if deploy is not None:
+            score, source = deploy, "deploy"
+        elif hint and hint.get("success") in HINT_SCORES:
+            score, source = HINT_SCORES[hint["success"]] * _clamp(hint.get("confidence", 0.0)), "mined"
+        else:
+            score, source = _outcome(episode), "none"
+    if episode["outcome"].get("caused_regression"):
+        score = min(score, -1.0)
+    return score, source
 
 
 def _cost_efficiency(episode):

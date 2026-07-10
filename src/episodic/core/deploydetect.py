@@ -1,7 +1,9 @@
 import re
 
+from . import testdetect
+
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_SEGMENT_SPLIT = re.compile(r"\|\||&&|[;\n]")
+_SEGMENT_SPLIT = testdetect._SEGMENT_SPLIT
 
 DEPLOY_PATTERNS = (
     ("wrangler", re.compile(r"\bwrangler\s+(?:pages\s+)?deploy\b")),
@@ -21,17 +23,37 @@ DEPLOY_PATTERNS = (
     ("make-deploy", re.compile(r"\bmake\s+deploy\b")),
 )
 
-_PROD = re.compile(r"--prod\b|--production\b|\bproduction\b|\bprod\b|\bmain\b|\bmaster\b")
-_STAGING = re.compile(r"\bstaging\b|\bstage\b|--env[= ]stag")
-_DEV = re.compile(r"\bpreview\b|\bdev\b|\bdevelopment\b|--env[= ]dev")
+_PROD_FLAGS = re.compile(r"--prod\b|--production\b")
+_PROD_WORDS = ("production", "prod", "main", "master")
+_STAGING_FLAGS = re.compile(r"--env[= ]stag")
+_STAGING_WORDS = ("staging", "stage")
+_DEV_FLAGS = re.compile(r"--env[= ]dev")
+_DEV_WORDS = ("preview", "dev", "development")
+
+_TOKEN_ADJACENT = set("/.:")
+
+
+def _bare_word_hit(segment, word):
+    for match in re.finditer(r"\b" + re.escape(word) + r"\b", segment):
+        start, end = match.span()
+        before = segment[start - 1] if start > 0 else " "
+        after = segment[end] if end < len(segment) else " "
+        if after in _TOKEN_ADJACENT or after == "-":
+            continue
+        if before in _TOKEN_ADJACENT:
+            continue
+        if before == "-" and not (start >= 2 and segment[start - 2] == "-"):
+            continue
+        return True
+    return False
 
 
 def _target_env(segment):
-    if _PROD.search(segment):
+    if _PROD_FLAGS.search(segment) or any(_bare_word_hit(segment, word) for word in _PROD_WORDS):
         return "prod"
-    if _STAGING.search(segment):
+    if _STAGING_FLAGS.search(segment) or any(_bare_word_hit(segment, word) for word in _STAGING_WORDS):
         return "staging"
-    if _DEV.search(segment):
+    if _DEV_FLAGS.search(segment) or any(_bare_word_hit(segment, word) for word in _DEV_WORDS):
         return "dev"
     return "unknown"
 

@@ -39,12 +39,23 @@ def _post(command, exit_code=None):
                      data={"command": command, "cwd": "/repo", "exit_code": exit_code, "response": ""})
 
 
-def test_bash_outcomes_maps_command_to_is_error(tmp_path):
+def test_bash_records_captures_is_error_and_exit_code(tmp_path):
     path = tmp_path / "t.jsonl"
     _write(path, [_use("a", "pytest -q"), _result("a", True), _use("b", "ls"), _result("b", False)])
-    outcomes = transcript.bash_outcomes(str(path))
-    assert list(outcomes["pytest -q"]) == [True]
-    assert list(outcomes["ls"]) == [False]
+    records = transcript.bash_records(str(path))
+    assert [r["is_error"] for r in records["pytest -q"]] == [True]
+    assert [r["is_error"] for r in records["ls"]] == [False]
+
+
+def test_apply_backfills_real_exit_code_from_transcript_text(tmp_path):
+    path = tmp_path / "t.jsonl"
+    _write(path, [_use("a", "pytest -q"), _result("a", True, "Exit code: 2\n\n1 failed")])
+    events = [
+        {"type": "session_start", "data": {"transcript_path": str(path)}},
+        {"type": "shell_command", "data": {"command": "pytest -q", "exit_code": None}},
+    ]
+    _apply_transcript_exit_codes(events)
+    assert events[1]["data"]["exit_code"] == 2
 
 
 def test_apply_enriches_none_exit_codes(tmp_path):
