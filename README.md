@@ -1,5 +1,7 @@
 # Episodic
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/StageWhisperIO/episodic)
+
 Turn coding-agent sessions into structured, outcome-labeled **episodes** — instant
 session summaries and PR notes, SFT / DPO / reward / RLDS datasets, replayable tasks, a
 reward model, and offline-RL transition batches. You bring the trainer (TRL is the default,
