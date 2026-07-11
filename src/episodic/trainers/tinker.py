@@ -1,4 +1,6 @@
+import math
 import os
+from collections import deque
 
 from . import register, TrainerUnavailable
 from .trl import _read_rows
@@ -10,6 +12,12 @@ HINT = (
 )
 DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
 DEFAULT_SAMPLER_TTL_SECONDS = 7 * 24 * 3600
+STEP_SAMPLER_TTL_SECONDS = 3600
+DEFAULT_EPSILON_LOW = 0.2
+DEFAULT_EPSILON_HIGH = 0.2
+DEFAULT_BASELINE_WINDOW = 8
+DEFAULT_SAMPLER_REFRESH_STEPS = 4
+_MISSING = object()
 
 
 def _require_tinker(name):
@@ -151,7 +159,7 @@ class TinkerSFTTrainer:
         return result
 
 
-def _grpo_prompts(rows):
+def _rollout_prompts(rows):
     prompts = []
     seen = set()
     for row in rows:
@@ -187,22 +195,10 @@ def _resolve_reward(config):
     return score
 
 
-def _group_advantages(rewards):
-    n = len(rewards)
-    if n == 0:
-        return None
-    mean = sum(rewards) / n
-    std = (sum((r - mean) ** 2 for r in rewards) / n) ** 0.5
-    if std < 1e-6:
-        return None
-    return [(r - mean) / std for r in rewards]
-
-
-def _grpo_datum(types, prompt_ids, completion_tokens, completion_logprobs, advantage, length_normalize):
+def _sao_datum(types, prompt_ids, completion_tokens, completion_logprobs, completion_advantages):
     full = prompt_ids + completion_tokens
     prompt_len = len(prompt_ids)
-    per_token = advantage / len(completion_tokens) if length_normalize else advantage
-    advantages = [0.0] * (prompt_len - 1) + [per_token] * len(completion_tokens)
+    advantages = [0.0] * (prompt_len - 1) + list(completion_advantages)
     logprobs = [0.0] * (prompt_len - 1) + list(completion_logprobs)
     return types.Datum(
         model_input=types.ModelInput.from_ints(full[:-1]),
@@ -210,102 +206,177 @@ def _grpo_datum(types, prompt_ids, completion_tokens, completion_logprobs, advan
     )
 
 
-class TinkerGRPOTrainer:
-    name = "tinker-grpo"
+def _ce_datum(types, prompt_ids, completion_tokens):
+    full = prompt_ids + completion_tokens
+    weights = [0.0] * (len(prompt_ids) - 1) + [1.0] * len(completion_tokens)
+    return types.Datum(
+        model_input=types.ModelInput.from_ints(full[:-1]),
+        loss_fn_inputs={"target_tokens": full[1:], "weights": weights},
+    )
+
+
+def _tensor_values(tensor):
+    values = tensor.tolist() if hasattr(tensor, "tolist") else list(tensor)
+    if values and isinstance(values[0], (list, tuple)):
+        values = values[0]
+    return [float(v) for v in values]
+
+
+def _completion_logprobs(output, index, count):
+    tensors = output.loss_fn_outputs[index]
+    for key in tensors:
+        if "logprob" in key:
+            return _tensor_values(tensors[key])[-count:]
+    raise ValueError(f"tinker-sao: forward pass returned no logprobs (keys: {sorted(tensors)})")
+
+
+def _dis_advantages(per_token, current_logprobs, rollout_logprobs, epsilon_low, epsilon_high):
+    advantages = []
+    masked = 0
+    for current, rollout in zip(current_logprobs, rollout_logprobs):
+        ratio = math.exp(current - rollout)
+        if (1.0 - epsilon_low) < ratio < (1.0 + epsilon_high):
+            advantages.append(per_token)
+        else:
+            advantages.append(0.0)
+            masked += 1
+    return advantages, masked
+
+
+def _baseline(key, prompt_windows, global_window):
+    window = prompt_windows.get(key)
+    if window:
+        return sum(window) / len(window)
+    if global_window:
+        return sum(global_window) / len(global_window)
+    return 0.0
+
+
+class TinkerSAOTrainer:
+    name = "tinker-sao"
     consumes = ("sft",)
-    version = "2"
+    version = "1"
 
     def train(self, dataset_path, out_dir, config):
         service, training, types, model, _rank = _open_training(self.name, config)
 
-        group_size = config.get("group_size", 8)
         learning_rate = config.get("learning_rate", 1e-5)
         max_tokens = config.get("max_tokens", 128)
         temperature = config.get("temperature", 1.0)
-        prompts_per_step = config.get("prompts_per_step", 2)
+        batch_size = config.get("batch_size", 1)
+        epsilon_low = config.get("epsilon_low", DEFAULT_EPSILON_LOW)
+        epsilon_high = config.get("epsilon_high", DEFAULT_EPSILON_HIGH)
+        baseline_window = config.get("baseline_window", DEFAULT_BASELINE_WINDOW)
+        refresh_steps = max(1, config.get("sampler_refresh_steps", DEFAULT_SAMPLER_REFRESH_STEPS))
         length_normalize = config.get("length_normalize", True)
         init_state = config.get("init_state")
+        ttl = config.get("sampler_ttl_seconds", _MISSING)
+        step_ttl = STEP_SAMPLER_TTL_SECONDS if ttl is _MISSING else ttl
+        final_ttl = DEFAULT_SAMPLER_TTL_SECONDS if ttl is _MISSING else ttl
 
         rows = _read_rows(dataset_path)
-        prompts = _grpo_prompts(rows)
+        prompts = _rollout_prompts(rows)
         if not prompts:
-            raise ValueError("tinker-grpo: no prompts (need SFT rows with a user turn)")
+            raise ValueError("tinker-sao: no prompts (need SFT rows with a user turn)")
         score = _resolve_reward(config)
 
         tokenizer = training.get_tokenizer()
 
-        chunks = list(_batches(prompts, prompts_per_step))
+        chunks = list(_batches(prompts, batch_size))
         if config.get("max_steps"):
             chunks = chunks[:config["max_steps"]]
 
+        prompt_windows = {}
+        global_window = deque(maxlen=baseline_window)
+        sampling = None
+        sampler_path = None
         history = []
-        sampler_ttl_seconds = config.get("sampler_ttl_seconds", DEFAULT_SAMPLER_TTL_SECONDS)
-        step_sampler_ttl = sampler_ttl_seconds if sampler_ttl_seconds is not None else 3600
         for step, chunk in enumerate(chunks):
-            sampler = training.save_weights_for_sampler(name=f"grpo-{step}", ttl_seconds=step_sampler_ttl).result()
-            sampling = service.create_sampling_client(model_path=sampler.path)
-            data = []
+            if sampling is None or step % refresh_steps == 0:
+                sampler = training.save_weights_for_sampler(name=f"sao-{step}", ttl_seconds=step_ttl).result()
+                sampling = service.create_sampling_client(model_path=sampler.path)
+                sampler_path = sampler.path
+            rollouts = []
             step_rewards = []
-            active_groups = 0
+            step_advantages = []
             for prompt in chunk:
                 prompt_ids = _token_ids(tokenizer.apply_chat_template(
                     [prompt["user"]], add_generation_prompt=True, tokenize=True))
                 response = sampling.sample(
                     prompt=types.ModelInput.from_ints(prompt_ids),
-                    num_samples=group_size,
+                    num_samples=1,
                     sampling_params=types.SamplingParams(max_tokens=max_tokens, temperature=temperature),
                 ).result()
-                group = []
-                for sequence in response.sequences:
-                    tokens = list(sequence.tokens)
-                    if not tokens:
-                        continue
-                    action_text = _strip_reasoning(tokenizer.decode(tokens))
-                    reward = score(prompt["user"].get("content", ""), action_text, prompt.get("meta"))
-                    group.append((tokens, list(sequence.logprobs), reward))
-                if not group:
+                sequence = response.sequences[0] if response.sequences else None
+                if sequence is None:
                     continue
-                rewards = [reward for _, _, reward in group]
-                step_rewards.extend(rewards)
-                advantages = _group_advantages(rewards)
-                if advantages is None:
+                tokens = list(sequence.tokens)
+                if not tokens:
                     continue
-                active_groups += 1
-                for (tokens, logprobs, _), advantage in zip(group, advantages):
-                    data.append(_grpo_datum(types, prompt_ids, tokens, logprobs, advantage, length_normalize))
+                action_text = _strip_reasoning(tokenizer.decode(tokens))
+                reward = score(prompt["user"].get("content", ""), action_text, prompt.get("meta"))
+                key = prompt["user"].get("content", "")
+                advantage = reward - _baseline(key, prompt_windows, global_window)
+                prompt_windows.setdefault(key, deque(maxlen=baseline_window)).append(reward)
+                global_window.append(reward)
+                step_rewards.append(reward)
+                step_advantages.append(advantage)
+                per_token = advantage / len(tokens) if length_normalize else advantage
+                rollouts.append((prompt_ids, tokens, list(sequence.logprobs), per_token))
 
             entry = {
                 "step": step,
                 "prompts": len(chunk),
-                "samples": len(step_rewards),
+                "samples": len(rollouts),
                 "reward_mean": (sum(step_rewards) / len(step_rewards)) if step_rewards else None,
-                "reward_max": max(step_rewards) if step_rewards else None,
-                "active_groups": active_groups,
-                "sampler_path": sampler.path,
+                "advantage_mean": (sum(step_advantages) / len(step_advantages)) if step_advantages else None,
+                "sampler_path": sampler_path,
             }
-            if data:
+            if rollouts:
+                current = training.forward(
+                    [_ce_datum(types, prompt_ids, tokens) for prompt_ids, tokens, _, _ in rollouts],
+                    "cross_entropy",
+                ).result()
+                data = []
+                masked_tokens = 0
+                total_tokens = 0
+                for index, (prompt_ids, tokens, rollout_logprobs, per_token) in enumerate(rollouts):
+                    current_logprobs = _completion_logprobs(current, index, len(tokens))
+                    advantages, masked = _dis_advantages(
+                        per_token, current_logprobs, rollout_logprobs, epsilon_low, epsilon_high)
+                    masked_tokens += masked
+                    total_tokens += len(tokens)
+                    data.append(_sao_datum(types, prompt_ids, tokens, rollout_logprobs, advantages))
                 forward = training.forward_backward(data, "importance_sampling").result()
                 training.optim_step(types.AdamParams(learning_rate=learning_rate)).result()
                 entry["loss_sum"] = forward.metrics.get("loss:sum")
+                entry["clip_fraction"] = masked_tokens / total_tokens if total_tokens else 0.0
                 entry["updated"] = True
             else:
                 entry["updated"] = False
             history.append(entry)
 
+        clip_fractions = [entry["clip_fraction"] for entry in history if "clip_fraction" in entry]
+        rewards = [entry["reward_mean"] for entry in history if entry.get("reward_mean") is not None]
         result = {
             "backend": "tinker",
             "base_model": model,
-            "method": "grpo",
+            "method": "sao",
             "warm_start": bool(init_state),
-            "group_size": group_size,
             "prompts": len(prompts),
             "steps": len(history),
             "updates": sum(1 for entry in history if entry.get("updated")),
+            "epsilon_low": epsilon_low,
+            "epsilon_high": epsilon_high,
+            "baseline_window": baseline_window,
+            "sampler_refresh_steps": refresh_steps,
+            "mean_reward": (sum(rewards) / len(rewards)) if rewards else None,
+            "clip_fraction": (sum(clip_fractions) / len(clip_fractions)) if clip_fractions else None,
             "history": history,
         }
-        result.update(_checkpoint(training, "episodic-grpo", "episodic-grpo-final", sampler_ttl_seconds))
+        result.update(_checkpoint(training, "episodic-sao", "episodic-sao-final", final_ttl))
         return result
 
 
 register(TinkerSFTTrainer())
-register(TinkerGRPOTrainer())
+register(TinkerSAOTrainer())

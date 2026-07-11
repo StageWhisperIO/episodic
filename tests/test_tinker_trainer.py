@@ -44,8 +44,17 @@ class FakeSamplingParams:
 
 
 class FakeForwardBackwardOutput:
-    def __init__(self, metrics):
+    def __init__(self, metrics, loss_fn_outputs=None):
         self.metrics = metrics
+        self.loss_fn_outputs = loss_fn_outputs or []
+
+
+class FakeTensor:
+    def __init__(self, values):
+        self.values = values
+
+    def tolist(self):
+        return list(self.values)
 
 
 class FakeSaveResult:
@@ -89,6 +98,15 @@ class FakeTrainingClient:
     def forward_backward(self, data, loss_fn, loss_fn_config=None):
         self.calls["forward_backward"].append({"data": data, "loss_fn": loss_fn})
         return FakeFuture(FakeForwardBackwardOutput({"loss:sum": 4.0}))
+
+    def forward(self, data, loss_fn, loss_fn_config=None):
+        self.calls["forward"].append({"data": data, "loss_fn": loss_fn})
+        shift = self.calls.get("forward_shift", 0.0)
+        outputs = [
+            {"logprobs": FakeTensor([shift] * len(datum.loss_fn_inputs["target_tokens"]))}
+            for datum in data
+        ]
+        return FakeFuture(FakeForwardBackwardOutput({"loss:sum": 1.0}, outputs))
 
     def optim_step(self, adam_params):
         self.calls["optim_step"].append(adam_params)
@@ -139,7 +157,7 @@ class FakeServiceClient:
 def _install_fake_tinker(monkeypatch):
     calls = {key: [] for key in (
         "create_lora_training_client", "create_training_client_from_state",
-        "create_sampling_client", "sample", "forward_backward",
+        "create_sampling_client", "sample", "forward", "forward_backward",
         "optim_step", "save_state", "save_weights_for_sampler",
     )}
     fake_types = py_types.ModuleType("tinker.types")
@@ -171,7 +189,7 @@ def _sft_rows():
     ]
 
 
-def _grpo_rows():
+def _sao_rows():
     return [
         {"messages": [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
          "meta": {"episode_id": "ep_a"}},
@@ -243,23 +261,22 @@ def test_tinker_sft_max_rows_limits_dataset(tmp_path, monkeypatch):
     assert len(calls["forward_backward"][0]["data"]) == 1
 
 
-def test_tinker_grpo_happy_path(tmp_path, monkeypatch):
+def test_tinker_sao_single_rollout_happy_path(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"
-    _write_rows(dataset, _grpo_rows())
+    _write_rows(dataset, _sao_rows())
     config = {
-        "model": "fake/grpo-model", "lora_rank": 4, "group_size": 3, "prompts_per_step": 1,
-        "learning_rate": 2e-5, "reward_funcs": [REWARD_REF],
+        "model": "fake/sao-model", "lora_rank": 4, "learning_rate": 2e-5,
+        "reward_funcs": [REWARD_REF],
     }
 
-    manifest = trainers.train("tinker-grpo", str(dataset), str(tmp_path / "out"), config, cwd=str(tmp_path))
+    manifest = trainers.train("tinker-sao", str(dataset), str(tmp_path / "out"), config, cwd=str(tmp_path))
     result = manifest["result"]
 
     assert result["backend"] == "tinker"
-    assert result["base_model"] == "fake/grpo-model"
-    assert result["method"] == "grpo"
+    assert result["base_model"] == "fake/sao-model"
+    assert result["method"] == "sao"
     assert result["warm_start"] is False
-    assert result["group_size"] == 3
     assert result["prompts"] == 2
     assert result["steps"] == 2
     assert result["updates"] == 2
@@ -267,33 +284,87 @@ def test_tinker_grpo_happy_path(tmp_path, monkeypatch):
     for entry in result["history"]:
         assert entry["updated"] is True
         assert entry["loss_sum"] == 4.0
-        assert entry["sampler_path"].startswith("tinker://sampler/grpo-")
-    assert result["state_path"] == "tinker://state/episodic-grpo"
-    assert result["sampler_path"] == "tinker://sampler/episodic-grpo-final"
-    assert len(calls["create_sampling_client"]) == 2
+        assert entry["clip_fraction"] == 0.0
+        assert entry["sampler_path"] == "tinker://sampler/sao-0"
+    assert result["state_path"] == "tinker://state/episodic-sao"
+    assert result["sampler_path"] == "tinker://sampler/episodic-sao-final"
+    assert all(call["num_samples"] == 1 for call in calls["sample"])
+    assert len(calls["create_sampling_client"]) == 1
+    assert len(calls["forward"]) == 2
     assert len(calls["forward_backward"]) == 2
+    assert all(call["loss_fn"] == "importance_sampling" for call in calls["forward_backward"])
     assert len(calls["optim_step"]) == 2
     assert all(params.learning_rate == 2e-5 for params in calls["optim_step"])
 
 
-def test_tinker_grpo_config_knobs_reach_client(tmp_path, monkeypatch):
+def test_tinker_sao_config_knobs_reach_client(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"
-    _write_rows(dataset, _grpo_rows())
+    _write_rows(dataset, _sao_rows())
     config = {
-        "model": "fake/grpo-knobs", "lora_rank": 2, "group_size": 5, "prompts_per_step": 2,
-        "max_tokens": 64, "temperature": 0.5, "reward_funcs": [REWARD_REF],
+        "model": "fake/sao-knobs", "lora_rank": 2, "batch_size": 2,
+        "max_tokens": 64, "temperature": 0.5, "epsilon_low": 0.1, "epsilon_high": 0.3,
+        "baseline_window": 4, "sampler_refresh_steps": 2, "reward_funcs": [REWARD_REF],
     }
 
-    trainers.get("tinker-grpo").train(str(dataset), str(tmp_path / "out"), config)
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
 
-    assert calls["create_lora_training_client"] == [{"base_model": "fake/grpo-knobs", "rank": 2}]
+    assert calls["create_lora_training_client"] == [{"base_model": "fake/sao-knobs", "rank": 2}]
     assert calls["sample"]
-    assert all(call["num_samples"] == 5 for call in calls["sample"])
+    assert all(call["num_samples"] == 1 for call in calls["sample"])
     assert all(call["max_tokens"] == 64 and call["temperature"] == 0.5 for call in calls["sample"])
+    assert result["epsilon_low"] == 0.1
+    assert result["epsilon_high"] == 0.3
+    assert result["baseline_window"] == 4
+    assert result["sampler_refresh_steps"] == 2
 
 
-@pytest.mark.parametrize("trainer_name", ["tinker-sft", "tinker-grpo"])
+def test_tinker_sao_dis_masks_offpolicy_tokens(tmp_path, monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    calls["forward_shift"] = -5.0
+    dataset = tmp_path / "sft.jsonl"
+    _write_rows(dataset, _sao_rows())
+    config = {"reward_funcs": [REWARD_REF]}
+
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
+
+    for entry in result["history"]:
+        assert entry["clip_fraction"] == 1.0
+    for call in calls["forward_backward"]:
+        for datum in call["data"]:
+            assert all(value == 0.0 for value in datum.loss_fn_inputs["advantages"])
+
+
+def test_tinker_sao_running_mean_baseline(tmp_path, monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    dataset = tmp_path / "sft.jsonl"
+    _write_rows(dataset, _sao_rows())
+    config = {"batch_size": 2, "reward_funcs": [REWARD_REF]}
+
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
+
+    data = calls["forward_backward"][0]["data"]
+    assert len(data) == 2
+    first_advantages = data[0].loss_fn_inputs["advantages"]
+    second_advantages = data[1].loss_fn_inputs["advantages"]
+    assert first_advantages[-1] == 1.0
+    assert all(value == 0.0 for value in second_advantages)
+    assert result["history"][0]["advantage_mean"] == 0.5
+
+
+def test_tinker_sao_sampler_refresh_steps(tmp_path, monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    dataset = tmp_path / "sft.jsonl"
+    _write_rows(dataset, _sao_rows())
+    config = {"sampler_refresh_steps": 1, "reward_funcs": [REWARD_REF]}
+
+    trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
+
+    names = [call["name"] for call in calls["save_weights_for_sampler"]]
+    assert names == ["sao-0", "sao-1", "episodic-sao-final"]
+
+
+@pytest.mark.parametrize("trainer_name", ["tinker-sft", "tinker-sao"])
 def test_tinker_missing_api_key_raises(tmp_path, monkeypatch, trainer_name):
     _install_fake_tinker(monkeypatch)
     monkeypatch.delenv("TINKER_API_KEY", raising=False)
@@ -342,41 +413,40 @@ def test_tinker_sft_sampler_ttl_knob_applies(tmp_path, monkeypatch):
     assert result["state_path"]
 
 
-def test_tinker_grpo_sampler_ttl_defaults_to_finite(tmp_path, monkeypatch):
+def test_tinker_sao_sampler_ttl_defaults_split_refresh_and_final(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"
-    _write_rows(dataset, _grpo_rows())
-    config = {"prompts_per_step": 1, "reward_funcs": [REWARD_REF]}
+    _write_rows(dataset, _sao_rows())
+    config = {"reward_funcs": [REWARD_REF]}
 
-    result = trainers.get("tinker-grpo").train(str(dataset), str(tmp_path / "out"), config)
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
 
     ttls = [call["ttl_seconds"] for call in calls["save_weights_for_sampler"]]
-    assert ttls == [7 * 24 * 3600] * 3
+    assert ttls == [3600, 7 * 24 * 3600]
     assert result["sampler_ttl_seconds"] == 7 * 24 * 3600
 
 
-def test_tinker_grpo_sampler_ttl_explicit_none_keeps_final_persistent(tmp_path, monkeypatch):
+def test_tinker_sao_sampler_ttl_explicit_none_is_persistent(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"
-    _write_rows(dataset, _grpo_rows())
-    config = {"prompts_per_step": 1, "reward_funcs": [REWARD_REF], "sampler_ttl_seconds": None}
+    _write_rows(dataset, _sao_rows())
+    config = {"reward_funcs": [REWARD_REF], "sampler_ttl_seconds": None}
 
-    result = trainers.get("tinker-grpo").train(str(dataset), str(tmp_path / "out"), config)
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
 
     ttls = [call["ttl_seconds"] for call in calls["save_weights_for_sampler"]]
-    assert ttls[:-1] == [3600, 3600]
-    assert ttls[-1] is None
+    assert ttls == [None, None]
     assert result["sampler_ttl_seconds"] is None
 
 
-def test_tinker_grpo_sampler_ttl_knob_applies_to_all_checkpoints(tmp_path, monkeypatch):
+def test_tinker_sao_sampler_ttl_knob_applies_to_all_checkpoints(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"
-    _write_rows(dataset, _grpo_rows())
-    config = {"prompts_per_step": 1, "reward_funcs": [REWARD_REF], "sampler_ttl_seconds": 900}
+    _write_rows(dataset, _sao_rows())
+    config = {"reward_funcs": [REWARD_REF], "sampler_ttl_seconds": 900}
 
-    result = trainers.get("tinker-grpo").train(str(dataset), str(tmp_path / "out"), config)
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
 
     ttls = [call["ttl_seconds"] for call in calls["save_weights_for_sampler"]]
-    assert ttls == [900, 900, 900]
+    assert ttls == [900, 900]
     assert result["sampler_ttl_seconds"] == 900

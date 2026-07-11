@@ -78,7 +78,9 @@ Everything is also available directly: `episodic summary`, `episodic list`,
 ### 4. Train (pluggable)
 
 Datasets are JSONL, so training is just another filter on the pipe. Backends are
-interchangeable — **TRL** (default, runs on a MacBook via MPS), **Unsloth** (`unsloth-sft` /
+interchangeable — **TRL** (default, runs on a MacBook via MPS), **Tinker** (`tinker-sft` /
+`tinker-sao`, real LoRA runs on Thinking Machines' GPUs from any machine; `tinker-sao` implements
+Single-rollout Asynchronous Optimization, arXiv:2607.07508), **Unsloth** (`unsloth-sft` /
 `unsloth-dpo`, fast 4-bit LoRA on an NVIDIA/AMD/Intel GPU under Linux/Windows — Apple Silicon
 not yet), the `command` trainer that shells out to any executable, or your own via an
 `episodic.trainers` entry point.
@@ -289,7 +291,7 @@ local-first. `link` talks to GitHub only when you ask; exporters write files onl
 ## Development
 
 ```bash
-PYTHONPATH=src python -m pytest tests -q     # 267 tests
+PYTHONPATH=src python -m pytest tests -q     # 270 tests
 python plugin-codex/test_codex.py            # codex mapping
 python rl-pipeline/test_pipeline.py          # pipeline stages
 episodic doctor                              # end-to-end install self-check
