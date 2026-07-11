@@ -12,3 +12,4 @@ exports/
 *.egg-info/
 build/
 rl-pipeline/out/
+.env
