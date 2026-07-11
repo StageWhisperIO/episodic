@@ -352,6 +352,40 @@ def test_tinker_sao_running_mean_baseline(tmp_path, monkeypatch):
     assert result["history"][0]["advantage_mean"] == 0.5
 
 
+class FakeCritic:
+    def __init__(self):
+        self.value_calls = []
+        self.update_calls = []
+
+    def value(self, texts):
+        self.value_calls.append(list(texts))
+        return [0.25] * len(texts)
+
+    def update(self, texts, targets):
+        self.update_calls.append((list(texts), list(targets)))
+        return 0.01
+
+
+def test_tinker_sao_critic_baseline_opt_in(tmp_path, monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    fake_critic = FakeCritic()
+    from episodic.trainers import critic as critic_mod
+    monkeypatch.setattr(critic_mod, "build_critic", lambda config, name: fake_critic)
+    dataset = tmp_path / "sft.jsonl"
+    _write_rows(dataset, _sao_rows())
+    config = {"critic_model": "fake/critic", "reward_funcs": [REWARD_REF]}
+
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
+
+    assert result["baseline"] == "critic"
+    assert result["critic_model"] == "fake/critic"
+    first_advantages = calls["forward_backward"][0]["data"][0].loss_fn_inputs["advantages"]
+    assert first_advantages[-1] == 0.75
+    assert len(fake_critic.update_calls) == 4
+    for entry in result["history"]:
+        assert entry["critic_loss"] == 0.01
+
+
 def test_tinker_sao_sampler_refresh_steps(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"

@@ -1,8 +1,8 @@
-import math
 import os
 from collections import deque
 
 from . import register, TrainerUnavailable
+from . import sao
 from .trl import _read_rows
 
 HINT = (
@@ -13,10 +13,6 @@ HINT = (
 DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
 DEFAULT_SAMPLER_TTL_SECONDS = 7 * 24 * 3600
 STEP_SAMPLER_TTL_SECONDS = 3600
-DEFAULT_EPSILON_LOW = 0.2
-DEFAULT_EPSILON_HIGH = 0.2
-DEFAULT_BASELINE_WINDOW = 8
-DEFAULT_SAMPLER_REFRESH_STEPS = 4
 _MISSING = object()
 
 
@@ -159,42 +155,6 @@ class TinkerSFTTrainer:
         return result
 
 
-def _rollout_prompts(rows):
-    prompts = []
-    seen = set()
-    for row in rows:
-        user = next((m for m in (row.get("messages") or []) if m.get("role") == "user"), None)
-        if not user:
-            continue
-        content = user.get("content", "")
-        if not content or content in seen:
-            continue
-        seen.add(content)
-        prompts.append({"user": user, "meta": row.get("meta")})
-    return prompts
-
-
-def _resolve_reward(config):
-    import importlib
-
-    funcs = []
-    for ref in config.get("reward_funcs", []):
-        module_name, _, attr = ref.partition(":")
-        funcs.append(getattr(importlib.import_module(module_name), attr))
-    if not funcs:
-        from .rewards import action_format_reward
-        funcs = [action_format_reward]
-
-    def score(prompt_text, completion_text, meta=None):
-        total = 0.0
-        for func in funcs:
-            out = func(prompts=[prompt_text], completions=[completion_text], meta=[meta])
-            total += float(out[0]) if out else 0.0
-        return total / len(funcs)
-
-    return score
-
-
 def _sao_datum(types, prompt_ids, completion_tokens, completion_logprobs, completion_advantages):
     full = prompt_ids + completion_tokens
     prompt_len = len(prompt_ids)
@@ -230,28 +190,6 @@ def _completion_logprobs(output, index, count):
     raise ValueError(f"tinker-sao: forward pass returned no logprobs (keys: {sorted(tensors)})")
 
 
-def _dis_advantages(per_token, current_logprobs, rollout_logprobs, epsilon_low, epsilon_high):
-    advantages = []
-    masked = 0
-    for current, rollout in zip(current_logprobs, rollout_logprobs):
-        ratio = math.exp(current - rollout)
-        if (1.0 - epsilon_low) < ratio < (1.0 + epsilon_high):
-            advantages.append(per_token)
-        else:
-            advantages.append(0.0)
-            masked += 1
-    return advantages, masked
-
-
-def _baseline(key, prompt_windows, global_window):
-    window = prompt_windows.get(key)
-    if window:
-        return sum(window) / len(window)
-    if global_window:
-        return sum(global_window) / len(global_window)
-    return 0.0
-
-
 class TinkerSAOTrainer:
     name = "tinker-sao"
     consumes = ("sft",)
@@ -264,21 +202,24 @@ class TinkerSAOTrainer:
         max_tokens = config.get("max_tokens", 128)
         temperature = config.get("temperature", 1.0)
         batch_size = config.get("batch_size", 1)
-        epsilon_low = config.get("epsilon_low", DEFAULT_EPSILON_LOW)
-        epsilon_high = config.get("epsilon_high", DEFAULT_EPSILON_HIGH)
-        baseline_window = config.get("baseline_window", DEFAULT_BASELINE_WINDOW)
-        refresh_steps = max(1, config.get("sampler_refresh_steps", DEFAULT_SAMPLER_REFRESH_STEPS))
+        epsilon_low = config.get("epsilon_low", sao.DEFAULT_EPSILON_LOW)
+        epsilon_high = config.get("epsilon_high", sao.DEFAULT_EPSILON_HIGH)
+        baseline_window = config.get("baseline_window", sao.DEFAULT_BASELINE_WINDOW)
+        refresh_steps = max(1, config.get("sampler_refresh_steps", sao.DEFAULT_SAMPLER_REFRESH_STEPS))
         length_normalize = config.get("length_normalize", True)
         init_state = config.get("init_state")
+        critic_updates = config.get("critic_updates", 2)
         ttl = config.get("sampler_ttl_seconds", _MISSING)
         step_ttl = STEP_SAMPLER_TTL_SECONDS if ttl is _MISSING else ttl
         final_ttl = DEFAULT_SAMPLER_TTL_SECONDS if ttl is _MISSING else ttl
 
         rows = _read_rows(dataset_path)
-        prompts = _rollout_prompts(rows)
+        prompts = sao.unique_prompts(rows)
         if not prompts:
             raise ValueError("tinker-sao: no prompts (need SFT rows with a user turn)")
-        score = _resolve_reward(config)
+        score = sao.resolve_reward(config)
+        from .critic import build_critic
+        value_model = build_critic(config, self.name)
 
         tokenizer = training.get_tokenizer()
 
@@ -314,15 +255,19 @@ class TinkerSAOTrainer:
                 if not tokens:
                     continue
                 action_text = _strip_reasoning(tokenizer.decode(tokens))
-                reward = score(prompt["user"].get("content", ""), action_text, prompt.get("meta"))
                 key = prompt["user"].get("content", "")
-                advantage = reward - _baseline(key, prompt_windows, global_window)
-                prompt_windows.setdefault(key, deque(maxlen=baseline_window)).append(reward)
-                global_window.append(reward)
+                reward = score(key, action_text, prompt.get("meta"))
+                if value_model is not None:
+                    baseline = value_model.value([key])[0]
+                else:
+                    baseline = sao.running_baseline(key, prompt_windows, global_window)
+                    prompt_windows.setdefault(key, deque(maxlen=baseline_window)).append(reward)
+                    global_window.append(reward)
+                advantage = reward - baseline
                 step_rewards.append(reward)
                 step_advantages.append(advantage)
                 per_token = advantage / len(tokens) if length_normalize else advantage
-                rollouts.append((prompt_ids, tokens, list(sequence.logprobs), per_token))
+                rollouts.append((prompt_ids, tokens, list(sequence.logprobs), per_token, key))
 
             entry = {
                 "step": step,
@@ -334,16 +279,17 @@ class TinkerSAOTrainer:
             }
             if rollouts:
                 current = training.forward(
-                    [_ce_datum(types, prompt_ids, tokens) for prompt_ids, tokens, _, _ in rollouts],
+                    [_ce_datum(types, prompt_ids, tokens) for prompt_ids, tokens, _, _, _ in rollouts],
                     "cross_entropy",
                 ).result()
                 data = []
                 masked_tokens = 0
                 total_tokens = 0
-                for index, (prompt_ids, tokens, rollout_logprobs, per_token) in enumerate(rollouts):
+                for index, (prompt_ids, tokens, rollout_logprobs, per_token, _) in enumerate(rollouts):
                     current_logprobs = _completion_logprobs(current, index, len(tokens))
-                    advantages, masked = _dis_advantages(
-                        per_token, current_logprobs, rollout_logprobs, epsilon_low, epsilon_high)
+                    advantages, masked = sao.dis_mask(
+                        [per_token] * len(tokens), current_logprobs, rollout_logprobs,
+                        epsilon_low, epsilon_high)
                     masked_tokens += masked
                     total_tokens += len(tokens)
                     data.append(_sao_datum(types, prompt_ids, tokens, rollout_logprobs, advantages))
@@ -352,6 +298,10 @@ class TinkerSAOTrainer:
                 entry["loss_sum"] = forward.metrics.get("loss:sum")
                 entry["clip_fraction"] = masked_tokens / total_tokens if total_tokens else 0.0
                 entry["updated"] = True
+                if value_model is not None:
+                    texts = [key for _, _, _, _, key in rollouts]
+                    critic_losses = [value_model.update(texts, step_rewards) for _ in range(critic_updates)]
+                    entry["critic_loss"] = critic_losses[-1]
             else:
                 entry["updated"] = False
             history.append(entry)
@@ -368,6 +318,8 @@ class TinkerSAOTrainer:
             "updates": sum(1 for entry in history if entry.get("updated")),
             "epsilon_low": epsilon_low,
             "epsilon_high": epsilon_high,
+            "baseline": "critic" if value_model is not None else "running_mean",
+            "critic_model": config.get("critic_model"),
             "baseline_window": baseline_window,
             "sampler_refresh_steps": refresh_steps,
             "mean_reward": (sum(rewards) / len(rewards)) if rewards else None,
