@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .. import store, exporters, trainers, replay, paths
 from ..exporters import is_bad, is_trusted
+from ..core import validity
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -14,6 +15,19 @@ SCHEMA_VERSION = "0.1.0"
 def _composite(episode):
     value = (episode.get("reward_vector") or {}).get("composite")
     return value if _finite(value) else 0.0
+
+
+def ensure_validity(episodes):
+    for episode in episodes:
+        prior_llm = (episode.get("validity") or {}).get("llm")
+        fresh = validity.assess(episode)
+        if prior_llm is not None:
+            fresh["llm"] = prior_llm
+            if not prior_llm.get("trustworthy"):
+                fresh["trust"] = "low"
+                fresh["source"] = "rules+llm"
+        episode["validity"] = fresh
+    return episodes
 
 
 def _execute_flag(value):
@@ -119,7 +133,9 @@ def run_loop(config, start=None):
     out = Path(config.get("out") or (paths.exports_dir(start) / "loop"))
     out.mkdir(parents=True, exist_ok=True)
 
-    train, holdout = partition(store.iter_episodes(start), min_composite, holdout_frac, seed)
+    episodes = ensure_validity(list(store.iter_episodes(start)))
+    config["_dropped_low_trust"] = [ep["id"] for ep in episodes if not is_trusted(ep)]
+    train, holdout = partition(episodes, min_composite, holdout_frac, seed)
 
     capped = len(holdout) > max_holdout
     holdout_eval = holdout[:max_holdout]
@@ -188,6 +204,7 @@ def _manifest(config, train, holdout, candidate_model, base_model, scores, decis
         "candidate_model": candidate_model,
         "executed": executed,
         "decision": decision,
+        "preflight_dropped": config.get("_dropped_low_trust", []),
         "train_ids": [episode["id"] for episode in train],
         "holdout_ids": [episode["id"] for episode in holdout],
         "holdout_capped": capped,
