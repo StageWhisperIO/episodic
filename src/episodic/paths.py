@@ -6,11 +6,11 @@ ENV_HOME = "EPISODIC_HOME"
 STORE_DIRNAME = ".episodic"
 ANCHORS = (STORE_DIRNAME, ".git")
 
-_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def safe_id(value, kind="id"):
-    if not isinstance(value, str) or ".." in value or not _SAFE_ID.fullmatch(value):
+    if not isinstance(value, str) or not _SAFE_ID.fullmatch(value):
         raise ValueError(f"unsafe {kind}: {value!r}")
     return value
 
