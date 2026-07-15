@@ -22,3 +22,15 @@ def test_episode_path_blocks_traversal():
 def test_session_dir_blocks_traversal():
     with pytest.raises(ValueError):
         paths.session_dir("../../secrets")
+
+
+def test_get_episode_blocks_traversal_even_if_target_exists(tmp_path):
+    from episodic import store
+    from episodic.schema import new_episode
+
+    (tmp_path / ".episodic" / "episodes").mkdir(parents=True)
+    (tmp_path / "secret.json").write_text('{"leaked": true}', encoding="utf-8")
+    store.save_episode(new_episode(id="ep_real1"), start=str(tmp_path))
+
+    assert store.get_episode("../../secret", start=str(tmp_path)) is None
+    assert store.get_episode("ep_real1", start=str(tmp_path))["id"] == "ep_real1"

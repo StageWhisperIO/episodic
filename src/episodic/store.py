@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from . import paths
@@ -90,10 +91,11 @@ def save_episode(episode, start=None):
 
 
 def get_episode(episode_id, start=None):
-    path = paths.episode_path(episode_id, start)
-    if not path.exists():
+    base = os.path.realpath(paths.episodes_dir(start))
+    target = os.path.realpath(os.path.join(base, f"{episode_id}.json"))
+    if os.path.dirname(target) != base or not os.path.exists(target):
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(Path(target).read_text(encoding="utf-8"))
 
 
 def index_row(episode):
