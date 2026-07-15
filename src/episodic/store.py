@@ -93,7 +93,7 @@ def save_episode(episode, start=None):
 def get_episode(episode_id, start=None):
     base = os.path.realpath(paths.episodes_dir(start))
     target = os.path.realpath(os.path.join(base, f"{episode_id}.json"))
-    if os.path.dirname(target) != base or not os.path.exists(target):
+    if not target.startswith(base + os.sep) or not os.path.exists(target):
         return None
     return json.loads(Path(target).read_text(encoding="utf-8"))
 
