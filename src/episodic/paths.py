@@ -1,9 +1,18 @@
 import os
+import re
 from pathlib import Path
 
 ENV_HOME = "EPISODIC_HOME"
 STORE_DIRNAME = ".episodic"
 ANCHORS = (STORE_DIRNAME, ".git")
+
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+
+
+def safe_id(value, kind="id"):
+    if not isinstance(value, str) or ".." in value or not _SAFE_ID.fullmatch(value):
+        raise ValueError(f"unsafe {kind}: {value!r}")
+    return value
 
 
 def resolve_base(start=None):
@@ -39,7 +48,7 @@ def replays_dir(start=None):
 
 
 def session_dir(session_id, start=None):
-    return sessions_dir(start) / session_id
+    return sessions_dir(start) / safe_id(session_id, "session_id")
 
 
 def events_path(session_id, start=None):
@@ -51,7 +60,7 @@ def meta_path(session_id, start=None):
 
 
 def episode_path(episode_id, start=None):
-    return episodes_dir(start) / f"{episode_id}.json"
+    return episodes_dir(start) / f"{safe_id(episode_id, 'episode_id')}.json"
 
 
 def index_path(start=None):
