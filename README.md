@@ -304,7 +304,7 @@ local-first. `link` talks to GitHub only when you ask; exporters write files onl
 ## Development
 
 ```bash
-PYTHONPATH=src python -m pytest tests -q     # 285 tests
+PYTHONPATH=src python -m pytest tests -q     # full test suite
 python plugin-codex/test_codex.py            # codex mapping
 python rl-pipeline/test_pipeline.py          # pipeline stages
 episodic doctor                              # end-to-end install self-check
