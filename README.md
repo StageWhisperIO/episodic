@@ -2,16 +2,18 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/StageWhisperIO/episodic)
 
-Turn coding-agent sessions into structured, outcome-labeled **episodes** — instant
-session summaries and PR notes, SFT / DPO / reward / RLDS datasets, replayable tasks, a
-reward model, and offline-RL transition batches. You bring the trainer (TRL is the default,
-any backend plugs in); Episodic produces everything it eats.
+Episodic records your coding-agent sessions and turns each one into a structured,
+outcome-labeled *episode*. From those episodes it produces session summaries and PR notes,
+training datasets (SFT, DPO, reward, RLDS), replayable tasks, a reward model, and offline-RL
+transition batches. It doesn't train models itself; you point it at a trainer (TRL by
+default, or any other backend).
 
-Episodic runs as a **Claude Code plugin** (and a Codex integration). It captures your
-session invisibly through hooks, normalizes it into a single `CodingEpisode` object, and
-gives you immediate value — *what changed, why, tests run, risky edits, a suggested PR title
-and description* — before any ML exists. Underneath, every session quietly becomes training
-data labeled by real outcomes (tests, PR merge, review, revert, one-click feedback).
+It runs as a Claude Code plugin, and there's a Codex integration too. Capture happens in the
+background through hooks, and each session is normalized into one `CodingEpisode` object. You
+get something useful right away, before any ML is involved: what changed, why, which tests
+ran, which edits look risky, and a suggested PR title and description. The same episodes
+double as training data, labeled by what actually happened — tests passing, a PR merging, a
+review, a revert, or a one-click rating.
 
 > Stored locally by default. Nothing leaves your machine unless you link a PR or run an exporter.
 
@@ -40,7 +42,8 @@ pip install -e .          # provides the `episodic` command
 # or run without installing:  PYTHONPATH=src python -m episodic.cli --help
 ```
 
-The base install is **stdlib-only** (fast hooks, no heavy deps). Optional extras:
+The base install uses only the standard library, so the hooks stay fast and there's nothing
+heavy to pull in. Optional extras:
 
 ```bash
 pip install -e ".[datasets]"   # pyarrow + datasets  → real Parquet export
@@ -79,20 +82,20 @@ Everything is also available directly: `episodic summary`, `episodic list`,
 
 ### 4. Train (pluggable)
 
-Datasets are JSONL, so training is just another filter on the pipe. Backends are
-interchangeable — **TRL** (default, runs on a MacBook via MPS; includes `trl-sao`, a local
-single-rollout RL trainer), **Tinker** (`tinker-sft` / `tinker-sao`, opt-in real LoRA runs on
-Thinking Machines' GPUs from any machine), **Unsloth** (`unsloth-sft` / `unsloth-dpo`, fast
-4-bit LoRA on an NVIDIA/AMD/Intel GPU under Linux/Windows — Apple Silicon not yet), the
-`command` trainer that shells out to any executable, or your own via an `episodic.trainers`
-entry point.
+Datasets are JSONL, so training is just another step in the pipe, and you can swap the
+backend. The options: TRL (the default, runs on a MacBook via MPS and includes `trl-sao`, a
+local single-rollout RL trainer); Tinker (`tinker-sft` / `tinker-sao`, opt-in LoRA runs on
+Thinking Machines' GPUs from any machine); Unsloth (`unsloth-sft` / `unsloth-dpo`, fast
+4-bit LoRA on an NVIDIA/AMD/Intel GPU under Linux or Windows, though not Apple Silicon yet);
+the `command` trainer, which shells out to any executable; or your own, registered through an
+`episodic.trainers` entry point.
 
 Both SAO trainers implement Single-rollout Asynchronous Optimization (arXiv:2607.07508): one
 rollout per prompt, a DIS token-level trust region, and a running-mean reward baseline by
 default. Setting `critic_model` in the train config upgrades the baseline to a local value
 model (small HF model + value head, frozen attention, 2 critic updates per policy step) that
-can be pretrained from `export-episode --format reward` via `critic_pretrain` — this pairs a
-Tinker-hosted policy with a MacBook-hosted critic.
+can be pretrained from `export-episode --format reward` via `critic_pretrain`. That lets you
+run the policy on Tinker and the critic on a MacBook.
 
 ```bash
 episodic train --list                                          # show backends
@@ -103,17 +106,18 @@ episodic train runs/dpo.jsonl --trainer command \
 ```
 
 Each run writes `manifest.json` (dataset sha256, episode ids, base commit, config, metrics)
-for provenance. Without `[trl]` installed, `episodic train` prints the ready dataset path
-instead of failing — separation of mechanism (Episodic) from policy (your trainer).
+so you can trace what produced what. If `[trl]` isn't installed, `episodic train` prints the
+path to the ready dataset instead of failing. Episodic handles the data; your trainer handles
+the training.
 
-> **What Episodic does not do:** run the gradient updates for you beyond invoking a backend.
-> It produces datasets, a (linear) reward model, and RL transition batches; the LLM training
-> step is owned by the trainer plugin.
+> **What Episodic doesn't do:** the gradient updates. It produces datasets, a (linear) reward
+> model, and RL transition batches; the actual LLM training step belongs to the trainer plugin.
 
-### 5. Keep the outcome signal honest
+### 5. Keep the outcome label current
 
-Outcomes evolve after you stop typing — CI finishes, the PR merges, and sometimes a change
-causes a bug weeks later. Two commands keep the reward label tracking reality:
+An outcome isn't settled when you stop typing. CI finishes later, the PR merges later, and
+sometimes a change turns out to cause a bug weeks down the line. Two commands keep the reward
+label in sync with what actually happened:
 
 ```bash
 episodic link --refresh-all                 # re-pull every in-flight PR (run from cron / a watch loop)
@@ -127,9 +131,9 @@ confirmed regression scores like a revert and is excluded from SFT / treated as 
 
 ### 6. Close the loop — `episodic loop`
 
-The loop turns "produces datasets" into "improves a model": quality-filter → train → **replay-eval
-on held-out tasks** → compare reward vs base → promote. It composes the same pluggable pieces —
-exporters, the trainer registry, and the replay harness.
+This is where producing datasets becomes improving a model: quality-filter, train, replay-eval
+on held-out tasks, compare the reward against the base model, and promote if it wins. It reuses
+the same pieces as everything else — the exporters, the trainer registry, and the replay harness.
 
 ```bash
 episodic loop --config loop.json                 # plan only (no code is executed)
@@ -149,10 +153,10 @@ episodic loop --config loop.json --execute       # run replay-eval and decide pr
 }
 ```
 
-**The RL chain** is three pluggable trainers: `trl-sft` (warmup) → `trl-reward` (reward model from
-preference pairs) → `trl-grpo` (policy RL driven by that reward model). The loop's promotion decision
-uses **real replay-eval reward** (it runs the model on held-out tasks and scores tests + diff
-overlap), not a proxy.
+The RL chain is three trainers you can swap out: `trl-sft` (warmup), then `trl-reward` (a reward
+model from preference pairs), then `trl-grpo` (policy RL driven by that reward model). The loop
+decides whether to promote based on real replay-eval reward — it runs the model on held-out tasks
+and scores the tests plus diff overlap — rather than a proxy.
 
 > **Security:** without `--execute` / `"execute": true`, the loop only filters episodes and writes the
 > dataset file — it never invokes the trainer, clones a repo, or runs a test command; it just prints a
@@ -160,14 +164,14 @@ overlap), not a proxy.
 > and runs replay-eval. Untrusted episode-derived test commands run without a shell; only your own
 > `replay_cmd` template runs via a shell.
 >
-> **Closing the loop** (the model actually *runs* in the agent) is the open-model lane —
-> Codex `--oss` or a custom agent pointed at the tuned model dir — not hosted Claude Code.
+> **Running the tuned model back in the agent** is the open-model lane: Codex `--oss` or a
+> custom agent pointed at the tuned model dir, not hosted Claude Code.
 
 ### 7. Verify & explore — testing tools + tutorials
 
-A self-contained testing layer lets you validate the install, generate realistic episodes
-without a coding agent, and benchmark how faithfully a model predicts environment
-observations — all offline, no GPU.
+A self-contained testing layer lets you check the install, generate realistic episodes
+without running a coding agent, and measure how well a model predicts environment
+observations. It all runs offline, with no GPU.
 
 ```bash
 episodic doctor                              # end-to-end self-check (synthetic store, no network)
@@ -180,8 +184,8 @@ pip install -e ".[tutorials]" && jupyter lab notebooks/   # five runnable tutori
   `make_population`, `populate_store`) — the basis for tests and notebooks.
 - **`episodic.fidelity` + `episodic worldbench`** implement the AgentWorld content-type-aware
   observation rubric, OOD source splits, and a Turing-test judge.
-- **[notebooks/](notebooks/)** — five publishable tutorials, generated reproducibly from
-  `notebooks/build.py` and executed headless in CI.
+- **[notebooks/](notebooks/)** — five tutorials, generated reproducibly from
+  `notebooks/build.py` and run headless in CI.
 
 Full guide: [`docs/TESTING.md`](docs/TESTING.md) · tutorial index: [`notebooks/README.md`](notebooks/README.md).
 
@@ -309,8 +313,8 @@ python notebooks/build.py                    # regenerate the tutorial notebooks
 
 ## Status
 
-Phases 1–7 are implemented end-to-end as a working foundation. Heuristic summaries and the
-reward vector are intentionally ML-free so the tool is useful on day one; the exporters and
-RL pipeline produce real, schema-validated data ready for training backends.
+Phases 1 through 7 are implemented end to end. The summaries and the reward vector are
+deliberately ML-free, so the tool is useful on day one; the exporters and RL pipeline produce
+real, schema-validated data that a training backend can use as-is.
 
 MIT licensed.
