@@ -179,6 +179,43 @@ def test_loop_string_false_execute_stays_dry_run(tmp_path, monkeypatch):
     assert "train_manifest" not in manifest
 
 
+def test_loop_dry_run_auto_mints_harbor_tasks(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    config = {"trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+              "min_composite": 0.0, "train_config": {"command": "false"},
+              "out": str(tmp_path / "loopout")}
+    manifest = loop.run_loop(config)
+
+    assert manifest["harbor"]["tasks"] == len(train_ids)
+    harbor_manifest = json.loads((tmp_path / "loopout" / "harbor" / "manifest.json").read_text())
+    assert harbor_manifest["task_count"] == len(train_ids)
+    for ep_id in train_ids:
+        assert (tmp_path / "loopout" / "harbor" / "tasks" / ep_id / "task.toml").exists()
+        script = (tmp_path / "loopout" / "harbor" / "tasks" / ep_id / "tests" / "run-tests.sh").read_text()
+        assert "pytest" in script
+
+
+def test_loop_mint_harbor_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    config = {"trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+              "min_composite": 0.0, "train_config": {"command": "false"}, "mint_harbor": False,
+              "out": str(tmp_path / "loopout")}
+    manifest = loop.run_loop(config)
+
+    assert manifest["harbor"] is None
+    assert not (tmp_path / "loopout" / "harbor").exists()
+
+
 def test_loop_executes_evaluates_and_promotes(tmp_path, monkeypatch):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
     origin, sha = _origin_repo(tmp_path)

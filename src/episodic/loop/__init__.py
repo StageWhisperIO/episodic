@@ -38,6 +38,22 @@ def _execute_flag(value):
     return False
 
 
+def _mint_flag(config):
+    value = config.get("mint_harbor", True)
+    if isinstance(value, bool):
+        return value
+    return _execute_flag(value)
+
+
+def _mint_harbor(train, out):
+    result = exporters.export(train, "harbor", str(out / "harbor"))
+    return {
+        "tasks": result.get("tasks", 0),
+        "skipped": len(result.get("skipped", [])),
+        "out_dir": result.get("out_dir"),
+    }
+
+
 def _hash_frac(episode_id, seed):
     digest = hashlib.sha256(f"{seed}:{episode_id}".encode("utf-8")).hexdigest()
     return int(digest[:8], 16) / 0x100000000
@@ -148,6 +164,8 @@ def run_loop(config, start=None):
     export_result = exporters.export(train, fmt, str(out / "dataset"))
     dataset_path = export_result["files"][0]
 
+    harbor_summary = _mint_harbor(train, out) if _mint_flag(config) else None
+
     if not execute:
         candidate_model = str(out / "candidate")
         plan = {
@@ -163,6 +181,7 @@ def run_loop(config, start=None):
         manifest = _manifest(
             config, train, holdout, None, base_model, [], "dry_run", capped, executed=False, plan=plan,
         )
+        manifest["harbor"] = harbor_summary
         _write(out, manifest)
         return manifest
 
@@ -180,6 +199,7 @@ def run_loop(config, start=None):
         decision = "keep_base"
 
     manifest = _manifest(config, train, holdout, candidate_model, base_model, scores, decision, capped, executed=True)
+    manifest["harbor"] = harbor_summary
     manifest["train_manifest"] = train_manifest
     manifest["candidate_mean"] = candidate_mean
     manifest["base_mean"] = base_mean
