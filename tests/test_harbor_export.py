@@ -103,6 +103,43 @@ def test_malicious_remote_url_is_not_embedded(sample_episode, tmp_path):
     assert "Mount the target repository" in dockerfile
 
 
+def test_harbor_relativizes_repo_path_and_marks_portable(sample_episode, tmp_path):
+    tomllib = pytest.importorskip("tomllib")
+    sample_episode["repo_state"]["root"] = "/repo"
+    sample_episode["commands"] = []
+    sample_episode["tests"] = [{
+        "ts": "t", "framework": "cargo",
+        "command": "cargo test --manifest-path /repo/src-tauri/Cargo.toml",
+        "passed": 1, "failed": 0, "total": 1, "ok": True,
+    }]
+    result = exporters.export([sample_episode], "harbor", tmp_path)
+
+    assert result["non_portable"] == 0
+    script = (_task_dir(tmp_path, "ep_test_good") / "tests" / "run-tests.sh").read_text()
+    assert "/repo/src-tauri" not in script
+    assert "./src-tauri/Cargo.toml" in script
+    doc = tomllib.loads((_task_dir(tmp_path, "ep_test_good") / "task.toml").read_text())
+    assert doc["metadata"]["portable"] is True
+
+
+def test_harbor_flags_non_portable_command(sample_episode, tmp_path):
+    tomllib = pytest.importorskip("tomllib")
+    sample_episode["repo_state"]["root"] = "/repo"
+    sample_episode["commands"] = []
+    sample_episode["tests"] = [{
+        "ts": "t", "framework": "cargo",
+        "command": "cargo test --manifest-path /elsewhere/Cargo.toml",
+        "passed": 1, "failed": 0, "total": 1, "ok": True,
+    }]
+    result = exporters.export([sample_episode], "harbor", tmp_path)
+
+    assert result["non_portable"] == 1
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert "ep_test_good" in manifest["non_portable"]
+    doc = tomllib.loads((_task_dir(tmp_path, "ep_test_good") / "task.toml").read_text())
+    assert doc["metadata"]["portable"] is False
+
+
 def test_harbor_rejects_stdout(episodes):
     with pytest.raises(ValueError, match="stdout"):
         exporters.export(episodes, "harbor", "-")

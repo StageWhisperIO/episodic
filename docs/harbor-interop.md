@@ -41,6 +41,15 @@ Episodes without a real passed verifier are skipped and listed in `manifest.json
 (`no_verifier`, `bad_outcome`, `low_trust`, `unsafe_id`). This is the point of the whole exercise:
 a minted task carries ground-truth reward, not the 0.5 neutral prior.
 
+## Portability
+
+Captured verifier commands often embed absolute host paths that will not exist in the container. The
+exporter relativizes any path under `repo_state.root` (`normalize.relativize_command`) before writing
+`tests/run-tests.sh`, so `--manifest-path /Users/you/repo/x/Cargo.toml` becomes `./x/Cargo.toml`. A
+command still referencing an absolute path outside the repo root is flagged `portable = false` in
+`task.toml`, counted under `non_portable` in `manifest.json`, and noted in the README. The same flag
+and normalization apply to the [Molt](molt-interop.md) exporter.
+
 ## What is automatic
 
 `episodic loop` mints Harbor tasks from its training partition into `<out>/harbor` on every run

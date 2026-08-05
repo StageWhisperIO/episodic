@@ -1,4 +1,16 @@
+import re
+
 from ..schema import new_event
+
+
+def relativize_command(command, root):
+    if not command or not root:
+        return command
+    root = root.rstrip("/")
+    if not root:
+        return command
+    return re.sub(re.escape(root) + r"(?=/|$|[\s'\";&|)])", ".", command)
+
 
 FILE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit"}
 FILE_WRITE_TOOLS = {"Write"}

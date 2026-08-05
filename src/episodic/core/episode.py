@@ -4,7 +4,7 @@ from datetime import datetime
 
 from ..schema import new_episode, new_event, default_stats
 from . import gitinfo, diffparse, testdetect, reward, transcript, deploydetect, validity
-from .normalize import MAX_RESPONSE_CHARS
+from .normalize import MAX_RESPONSE_CHARS, relativize_command
 from .ids import episode_id_from_session
 
 STEP_EVENT_TYPES = {
@@ -171,13 +171,13 @@ def _apply_transcript_exit_codes(events, records=None):
                 event["data"]["exit_code"] = entry["exit_code"]
 
 
-def _build_commands(events):
+def _build_commands(events, root=None):
     commands = []
     for event in events:
         if event["type"] != "shell_command":
             continue
         data = event["data"]
-        command = data.get("command", "")
+        command = relativize_command(data.get("command", ""), root)
         commands.append({
             "ts": event["ts"],
             "command": command,
@@ -190,14 +190,15 @@ def _build_commands(events):
     return commands
 
 
-def _build_tests(events):
+def _build_tests(events, root=None):
     tests = []
     for event in events:
         if event["type"] != "shell_command":
             continue
         data = event["data"]
         detected = testdetect.detect_test_run(
-            data.get("command", ""), data.get("response", ""), event["ts"], data.get("exit_code")
+            relativize_command(data.get("command", ""), root),
+            data.get("response", ""), event["ts"], data.get("exit_code")
         )
         if detected:
             detected["reconstructed"] = bool(data.get("reconstructed"))
@@ -385,8 +386,8 @@ def build_episode(session, generate=None):
     events = _reconstruct_failed_commands(events, transcript_records)
     _apply_transcript_exit_codes(events, transcript_records)
     episode["steps"] = _build_steps(events)
-    episode["commands"] = _build_commands(events)
-    episode["tests"] = _build_tests(events)
+    episode["commands"] = _build_commands(events, repo_state.get("root"))
+    episode["tests"] = _build_tests(events, repo_state.get("root"))
     episode["diffs"], episode["diff_source"] = _build_diffs(
         repo_state, cwd, events, live=not meta.get("imported")
     )

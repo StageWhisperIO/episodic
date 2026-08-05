@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-FORMATS = ("sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet", "harbor")
+FORMATS = ("sft", "dpo", "reward", "rlds", "wm", "jsonl", "parquet", "harbor", "molt")
 
 STDOUT = "-"
 
@@ -395,7 +395,7 @@ def _toml_document(preamble, tables):
     return "\n\n".join(parts) + "\n"
 
 
-def _task_toml(ep, verifier):
+def _task_toml(ep, verifier, portable):
     repo = ep.get("repo_state") or {}
     rv = ep.get("reward_vector") or {}
     preamble = f'# Harbor task minted by Episodic from episode {ep.get("id")}\nversion = "1.0"'
@@ -411,6 +411,7 @@ def _task_toml(ep, verifier):
             "episode_id": ep.get("id"),
             "agent": ep.get("agent"),
             "source": "episodic",
+            "portable": portable,
             "composite_reward": rv.get("composite"),
             "outcome": (ep.get("outcome") or {}).get("status"),
             "branch": repo.get("branch"),
@@ -462,9 +463,9 @@ def _task_metadata(ep, verifier):
     }
 
 
-def _write_task(task_dir, ep, verifier):
+def _write_task(task_dir, ep, verifier, portable):
     (task_dir / "tests").mkdir(parents=True, exist_ok=True)
-    (task_dir / "task.toml").write_text(_task_toml(ep, verifier), encoding="utf-8")
+    (task_dir / "task.toml").write_text(_task_toml(ep, verifier, portable), encoding="utf-8")
     (task_dir / "Dockerfile").write_text(_dockerfile(ep, verifier), encoding="utf-8")
     (task_dir / "tests" / "run-tests.sh").write_text(_test_script(verifier), encoding="utf-8")
     (task_dir / "metadata.json").write_text(
@@ -474,18 +475,24 @@ def _write_task(task_dir, ep, verifier):
         (task_dir / "solution.patch").write_text(patch, encoding="utf-8")
 
 
-def _harbor_readme(minted, skipped):
+def _harbor_readme(minted, skipped, non_portable):
+    portability = (
+        f"\n\n{len(non_portable)} of the minted verifiers reference absolute host paths "
+        "(`portable = false` in task.toml); normalize those before running in the container."
+        if non_portable else ""
+    )
     return (
         "# Episodic-minted Harbor dataset\n\n"
         f"{len(minted)} task(s) minted from captured coding episodes; "
-        f"{len(skipped)} episode(s) skipped (no real verifier, low trust, or bad outcome).\n\n"
+        f"{len(skipped)} episode(s) skipped (no real verifier, low trust, or bad outcome)."
+        f"{portability}\n\n"
         "Each task carries the captured test command as its verifier and the recorded diff as "
         "`solution.patch`. Run with Harbor:\n\n"
         "```bash\nharbor run --dataset ./ --agent claude-code --model <model>\n```\n"
     )
 
 
-def _write_dataset(out_dir, minted, skipped):
+def _write_dataset(out_dir, minted, skipped, non_portable):
     dataset_toml = _toml_document(
         "# Episodic-minted Harbor dataset",
         [("dataset", {
@@ -498,16 +505,18 @@ def _write_dataset(out_dir, minted, skipped):
     )
     (out_dir / "dataset.toml").write_text(dataset_toml, encoding="utf-8")
     (out_dir / "manifest.json").write_text(
-        json.dumps({"minted": minted, "skipped": skipped, "task_count": len(minted)}, indent=2),
+        json.dumps({"minted": minted, "skipped": skipped, "task_count": len(minted),
+                    "non_portable": non_portable}, indent=2),
         encoding="utf-8")
-    (out_dir / "README.md").write_text(_harbor_readme(minted, skipped), encoding="utf-8")
+    (out_dir / "README.md").write_text(_harbor_readme(minted, skipped, non_portable), encoding="utf-8")
 
 
 def _export_harbor(episodes, out_dir):
     from .. import paths
+    from ..core import normalize
 
     tasks_root = out_dir / "tasks"
-    minted, skipped = [], []
+    minted, skipped, non_portable = [], [], []
     for ep in episodes:
         ep_id = ep.get("id") or ""
         reason = harbor_skip_reason(ep)
@@ -519,14 +528,205 @@ def _export_harbor(episodes, out_dir):
         except ValueError:
             skipped.append({"id": ep_id, "reason": "unsafe_id"})
             continue
-        _write_task(tasks_root / task_id, ep, _captured_verifier(ep))
+        verifier = _captured_verifier(ep)
+        command = normalize.relativize_command(verifier["command"], (ep.get("repo_state") or {}).get("root"))
+        verifier = {**verifier, "command": command}
+        portable = _command_is_portable(command)
+        if not portable:
+            non_portable.append(task_id)
+        _write_task(tasks_root / task_id, ep, verifier, portable)
         minted.append(task_id)
-    _write_dataset(out_dir, minted, skipped)
+    _write_dataset(out_dir, minted, skipped, non_portable)
     return {
         "files": [str(out_dir / "dataset.toml"), str(out_dir / "manifest.json")],
         "count": len(minted),
         "tasks": len(minted),
         "skipped": skipped,
+        "non_portable": len(non_portable),
+    }
+
+
+_MOLT_PROMPT_SUFFIX = "\n\nRespond with a unified diff of your changes inside a ```diff code block."
+
+_SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
+
+_MOLT_ENV_TEMPLATE = '''import json
+import shutil
+import subprocess
+import tempfile
+
+import torch
+
+from molt.agents import Env, Result, StepEnvRunner
+
+CLONE_TIMEOUT = 120
+TEST_TIMEOUT = 120
+
+
+def _extract_patch(text):
+    fence = "```"
+    if fence in text:
+        blocks = text.split(fence)
+        for i in range(1, len(blocks), 2):
+            body = blocks[i]
+            newline = body.find("\\n")
+            lang = body[:newline].strip().lower() if newline != -1 else ""
+            content = body[newline + 1:] if newline != -1 else body
+            if lang in ("diff", "patch") or content.lstrip().startswith("diff --git"):
+                return content
+    return text
+
+
+def _safe_arg(value):
+    return isinstance(value, str) and value != "" and not value.startswith("-") and "\\x00" not in value
+
+
+def _run(args, cwd=None, timeout=60):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout).returncode
+
+
+def _grade(label, action_text):
+    spec = json.loads(label) if label else {}
+    remote = spec.get("remote_url")
+    command = spec.get("test_command")
+    if not _safe_arg(remote) or not command:
+        return 0.0
+    workspace = tempfile.mkdtemp(prefix="episodic_molt_")
+    try:
+        if _run(["git", "clone", "--quiet", remote, workspace], timeout=CLONE_TIMEOUT) != 0:
+            return 0.0
+        base = spec.get("base_commit")
+        if _safe_arg(base) and _run(["git", "-C", workspace, "checkout", "--quiet", base], timeout=30) != 0:
+            return 0.0
+        patch = _extract_patch(action_text)
+        if patch.strip():
+            applied = subprocess.run(["git", "-C", workspace, "apply", "-"], input=patch,
+                                     capture_output=True, text=True, timeout=30).returncode
+            if applied != 0:
+                return 0.0
+        rc = subprocess.run(["bash", "-c", "set -o pipefail\\n" + command], cwd=workspace,
+                            capture_output=True, text=True, timeout=TEST_TIMEOUT).returncode
+        return 1.0 if rc == 0 else 0.0
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+class EpisodicEnv(Env):
+    async def step(self, state) -> Result:
+        reward = torch.tensor(_grade(state.get("label") or "", state.get("action_text", "")), dtype=torch.float32)
+        return Result(reward=reward, info={"tests_pass": reward})
+
+
+class AgentRunner(StepEnvRunner):
+    def __init__(self):
+        super().__init__(EpisodicEnv)
+'''
+
+
+_ABS_PATH_IN_CMD = re.compile(r"(?:^|\s)/")
+
+
+def _command_is_portable(command):
+    return not _ABS_PATH_IN_CMD.search(command or "")
+
+
+def _clonable_remote(remote):
+    return isinstance(remote, str) and remote.strip() != "" and not remote.startswith("-") and "\x00" not in remote
+
+
+def molt_skip_reason(ep):
+    if not is_trusted(ep):
+        return "low_trust"
+    if is_bad(ep):
+        return "bad_outcome"
+    if _captured_verifier(ep) is None:
+        return "no_verifier"
+    if not _clonable_remote((ep.get("repo_state") or {}).get("remote_url")):
+        return "no_remote"
+    return None
+
+
+def _molt_verifier_spec(ep):
+    from ..core import normalize
+
+    verifier = _captured_verifier(ep)
+    repo = ep.get("repo_state") or {}
+    base = repo.get("base_commit")
+    return {
+        "remote_url": repo.get("remote_url"),
+        "base_commit": base if base and _SAFE_REF.fullmatch(base) else None,
+        "test_command": normalize.relativize_command(verifier["command"], repo.get("root")),
+        "framework": verifier["framework"],
+    }
+
+
+def _molt_readme(minted, skipped, non_portable):
+    portability = (
+        f"\n\n{non_portable} of the minted verifiers reference absolute host paths (`portable: false` in "
+        "prompts.jsonl); normalize those paths before running in a fresh clone."
+        if non_portable else ""
+    )
+    return (
+        "# Episodic-minted Molt RL bundle\n\n"
+        f"{minted} prompt(s) minted from verified coding episodes; {skipped} episode(s) skipped."
+        f"{portability}\n\n"
+        "Each rollout clones `remote_url` at `base_commit`, applies the model's unified diff, and runs "
+        "the captured test command (under `bash -c` with `set -o pipefail`) as the verifier "
+        "(reward 1.0 on pass, else 0.0). Run with Molt:\n\n"
+        "```bash\n"
+        "python3 -m molt.cli.train_rl_ray \\\n"
+        "  --actor.model_name_or_path /path/to/automodel \\\n"
+        "  --data.prompt_dataset ./prompts.jsonl \\\n"
+        "  --data.input_key input \\\n"
+        "  --train.agent_path ./agents/episodic_env.py \\\n"
+        "  --algo.advantage.estimator grpo \\\n"
+        "  --ckpt.output_dir ./ckpt/rl\n"
+        "```\n"
+    )
+
+
+def _export_molt(episodes, out_dir):
+    from .. import paths
+
+    rows, minted, skipped, non_portable = [], [], [], []
+    for ep in episodes:
+        ep_id = ep.get("id") or ""
+        reason = molt_skip_reason(ep)
+        if reason:
+            skipped.append({"id": ep_id, "reason": reason})
+            continue
+        try:
+            safe = paths.safe_id(ep_id, "episode_id")
+        except ValueError:
+            skipped.append({"id": ep_id, "reason": "unsafe_id"})
+            continue
+        spec = _molt_verifier_spec(ep)
+        portable = _command_is_portable(spec["test_command"])
+        if not portable:
+            non_portable.append(safe)
+        rows.append({
+            "input": (ep.get("intent") or "") + _MOLT_PROMPT_SUFFIX,
+            "label": json.dumps(spec, ensure_ascii=False),
+            "episode_id": safe,
+            "composite_reward": (ep.get("reward_vector") or {}).get("composite"),
+            "portable": portable,
+        })
+        minted.append(safe)
+
+    (out_dir / "agents").mkdir(parents=True, exist_ok=True)
+    (out_dir / "agents" / "episodic_env.py").write_text(_MOLT_ENV_TEMPLATE, encoding="utf-8")
+    write_jsonl(out_dir / "prompts.jsonl", rows)
+    (out_dir / "README.md").write_text(_molt_readme(len(minted), len(skipped), len(non_portable)), encoding="utf-8")
+    (out_dir / "manifest.json").write_text(
+        json.dumps({"minted": minted, "skipped": skipped, "task_count": len(minted),
+                    "non_portable": non_portable}, indent=2),
+        encoding="utf-8")
+    return {
+        "files": [str(out_dir / "prompts.jsonl"), str(out_dir / "agents" / "episodic_env.py")],
+        "count": len(minted),
+        "tasks": len(minted),
+        "skipped": skipped,
+        "non_portable": len(non_portable),
     }
 
 
@@ -539,6 +739,7 @@ _EXPORTERS = {
     "wm": _export_wm,
     "parquet": _export_parquet,
     "harbor": _export_harbor,
+    "molt": _export_molt,
 }
 
 
@@ -550,6 +751,8 @@ def export(episodes, fmt, out_dir):
             raise ValueError("parquet is a binary format and cannot be written to stdout; pass a real --out path")
         if fmt == "harbor":
             raise ValueError("harbor writes a task directory tree and cannot be written to stdout; pass a real --out path")
+        if fmt == "molt":
+            raise ValueError("molt writes a bundle directory and cannot be written to stdout; pass a real --out path")
         result = _EXPORTERS[fmt](episodes, STDOUT)
         result["format"] = fmt
         result["out_dir"] = STDOUT
