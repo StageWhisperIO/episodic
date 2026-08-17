@@ -473,6 +473,41 @@ def test_tinker_sao_sampler_ttl_explicit_none_is_persistent(tmp_path, monkeypatc
     assert result["sampler_ttl_seconds"] is None
 
 
+def test_open_sampler_reuses_service_client_and_sample_text_decodes(monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    from episodic.trainers.tinker import open_sampler, sample_text
+
+    sampler = open_sampler("tinker://sampler/abc", base_model="fake/base")
+
+    assert calls["create_lora_training_client"] == [{"base_model": "fake/base", "rank": 1}]
+    assert calls["create_sampling_client"] == ["tinker://sampler/abc"]
+
+    text = sample_text(sampler, [{"role": "user", "content": "hi"}], max_tokens=32, temperature=0.2)
+
+    assert text == "x"
+    assert calls["sample"][-1]["max_tokens"] == 32
+    assert calls["sample"][-1]["temperature"] == 0.2
+
+
+def test_open_sampler_defaults_base_model(monkeypatch):
+    from episodic.trainers import tinker as tinker_mod
+
+    calls = _install_fake_tinker(monkeypatch)
+    tinker_mod.open_sampler("tinker://sampler/abc")
+
+    assert calls["create_lora_training_client"] == [{"base_model": tinker_mod.DEFAULT_MODEL, "rank": 1}]
+
+
+def test_open_sampler_requires_api_key(monkeypatch):
+    _install_fake_tinker(monkeypatch)
+    monkeypatch.delenv("TINKER_API_KEY", raising=False)
+    from episodic.trainers.tinker import open_sampler
+
+    with pytest.raises(trainers.TrainerUnavailable) as info:
+        open_sampler("tinker://sampler/abc")
+    assert "TINKER_API_KEY" in info.value.hint
+
+
 def test_tinker_sao_sampler_ttl_knob_applies_to_all_checkpoints(tmp_path, monkeypatch):
     calls = _install_fake_tinker(monkeypatch)
     dataset = tmp_path / "sft.jsonl"

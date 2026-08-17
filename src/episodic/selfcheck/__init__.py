@@ -12,6 +12,7 @@ def _check_imports():
     modules = [
         "episodic.schema", "episodic.store", "episodic.service", "episodic.exporters",
         "episodic.replay", "episodic.loop", "episodic.trainers", "episodic.worldmodel",
+        "episodic.worldmodel.env", "episodic.worldmodel.inference",
         "episodic.worldbench", "episodic.fidelity", "episodic.testing",
         "episodic.core.reward", "episodic.core.summary", "episodic.core.testdetect",
     ]
@@ -110,6 +111,26 @@ def _check_worldbench():
     return True, f"worldbench oracle={oracle} empty={empty} turing_indist={turing['indistinguishability']}"
 
 
+def _check_worldmodel_env():
+    from episodic.worldbench import NAMED_PREDICTORS
+    from episodic.worldmodel import env as wm_env
+    from episodic.testing import make_episode
+
+    episode = make_episode("ep_doctor_env")
+    result = wm_env.rollout(episode, NAMED_PREDICTORS["prefix"])
+    assert result["turns"], "rollout produced no turns"
+    assert all("predicted_observation" in turn and "target_observation" in turn for turn in result["turns"])
+
+    capped = wm_env.rollout(episode, NAMED_PREDICTORS["prefix"], max_turns=1)
+    assert len(capped["turns"]) == 1 and capped["truncated"] is True
+
+    from episodic import fidelity
+
+    trajectory = fidelity.trajectory_score(result["turns"])
+    assert trajectory["n"] == len(result["turns"])
+    return True, f"rollout + trajectory_score ok ({len(result['turns'])} turns)"
+
+
 def _check_replay_plan():
     from episodic import replay
     from episodic.testing import make_episode
@@ -138,7 +159,7 @@ def _check_loop_dry_run():
 
 def _check_optional_deps():
     available = {}
-    for name in ("numpy", "pyarrow", "datasets", "torch", "trl", "transformers", "unsloth"):
+    for name in ("numpy", "pyarrow", "datasets", "torch", "trl", "transformers", "unsloth", "mlx_lm", "tinker"):
         try:
             importlib.import_module(name)
             available[name] = True
@@ -157,6 +178,7 @@ _CHECKS = [
     ("worldmodel", True, _check_worldmodel),
     ("fidelity", True, _check_fidelity),
     ("worldbench", True, _check_worldbench),
+    ("worldmodel_env", True, _check_worldmodel_env),
     ("replay_plan", True, _check_replay_plan),
     ("loop_dry_run", True, _check_loop_dry_run),
     ("optional_deps", False, _check_optional_deps),

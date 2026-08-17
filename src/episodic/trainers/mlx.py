@@ -84,4 +84,19 @@ class MLXSFTTrainer:
         return result
 
 
+def load_predictor(model, adapter_path=None, max_tokens=200, temperature=0.0):
+    _require_mlx()
+    from mlx_lm import generate, load
+    from mlx_lm.sample_utils import make_sampler
+
+    mlx_model, tokenizer = load(model, adapter_path=adapter_path)
+    sampler = make_sampler(temp=temperature)
+
+    def predict_text(messages):
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        return generate(mlx_model, tokenizer, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+
+    return predict_text
+
+
 register(MLXSFTTrainer())

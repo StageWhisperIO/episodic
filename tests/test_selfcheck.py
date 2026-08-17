@@ -7,7 +7,14 @@ def test_run_checks_all_required_pass():
     assert report["ok"] is True
     assert report["failed"] == []
     names = {c["name"] for c in report["checks"]}
-    assert {"exporters", "worldbench", "loop_dry_run", "fidelity", "worldmodel", "replay_plan"}.issubset(names)
+    assert {"exporters", "worldbench", "worldmodel_env", "loop_dry_run", "fidelity", "worldmodel",
+           "replay_plan"}.issubset(names)
+
+
+def test_optional_deps_check_reports_mlx_and_tinker_importability():
+    report = selfcheck.run_checks()
+    optional = next(c for c in report["checks"] if c["name"] == "optional_deps")
+    assert {"mlx_lm", "tinker"}.issubset(optional["detail"])
 
 
 def test_doctor_cli_exit_zero(capsys):
@@ -23,4 +30,4 @@ def test_doctor_json_mode(capsys):
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is True
-    assert report["passed"] >= 11
+    assert report["passed"] >= 12

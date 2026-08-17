@@ -52,3 +52,43 @@ def test_classify_content_detects_runtime_json_and_type():
     assert info["response_type"] == "success"
     err = fidelity.classify_content("Traceback (most recent call last): Error")
     assert err["response_type"] == "error"
+
+
+def test_trajectory_score_of_no_turns_is_all_none():
+    result = fidelity.trajectory_score([])
+    assert result == {"n": 0, "mean_composite": None, "final_composite": None, "drift": None, "per_turn": []}
+
+
+def test_trajectory_score_perfect_rollout_has_zero_drift():
+    turns = [
+        {"predicted_observation": "same", "target_observation": "same"},
+        {"predicted_observation": "same2", "target_observation": "same2"},
+        {"predicted_observation": "same3", "target_observation": "same3"},
+    ]
+    result = fidelity.trajectory_score(turns)
+    assert result["n"] == 3
+    assert result["mean_composite"] == 1.0
+    assert result["final_composite"] == 1.0
+    assert result["drift"] == 0.0
+    assert result["per_turn"] == [1.0, 1.0, 1.0]
+
+
+def test_trajectory_score_degrading_rollout_has_positive_drift():
+    turns = [
+        {"predicted_observation": "file written", "target_observation": "file written"},
+        {"predicted_observation": "totally unrelated garbage", "target_observation": "file written"},
+    ]
+    result = fidelity.trajectory_score(turns)
+    assert result["per_turn"][0] > result["per_turn"][1]
+    assert result["drift"] > 0
+    assert result["drift"] == round(result["per_turn"][0] - result["per_turn"][1], 4)
+
+
+def test_trajectory_score_uses_mean_of_per_turn_composites():
+    turns = [
+        {"predicted_observation": "x", "target_observation": "x"},
+        {"predicted_observation": "", "target_observation": "y" * 40},
+    ]
+    result = fidelity.trajectory_score(turns)
+    expected_mean = round(sum(result["per_turn"]) / len(result["per_turn"]), 4)
+    assert result["mean_composite"] == expected_mean

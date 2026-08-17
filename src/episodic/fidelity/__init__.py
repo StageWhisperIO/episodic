@@ -102,6 +102,23 @@ def _quality_score(predicted, ground_truth):
     return max(0.0, 1.0 - abs(pred_len - gold_len) / gold_len)
 
 
+def trajectory_score(turns, weights=None):
+    scored = [
+        score_observation(turn.get("predicted_observation"), turn.get("target_observation"), weights=weights)
+        for turn in turns
+    ]
+    if not scored:
+        return {"n": 0, "mean_composite": None, "final_composite": None, "drift": None, "per_turn": []}
+    composites = [row["composite"] for row in scored]
+    return {
+        "n": len(scored),
+        "mean_composite": round(sum(composites) / len(composites), 4),
+        "final_composite": composites[-1],
+        "drift": round(composites[0] - composites[-1], 4),
+        "per_turn": composites,
+    }
+
+
 def score_observation(predicted, ground_truth, weights=None):
     weights = weights or DEFAULT_WEIGHTS
     exact = (predicted or "") == (ground_truth or "")

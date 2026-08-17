@@ -330,5 +330,32 @@ class TinkerSAOTrainer:
         return result
 
 
+def open_sampler(sampler_path, base_model=None, lora_rank=1):
+    _require_tinker("tinker-sampler")
+    import tinker
+
+    service = tinker.ServiceClient()
+    training = service.create_lora_training_client(base_model=base_model or DEFAULT_MODEL, rank=lora_rank)
+    tokenizer = training.get_tokenizer()
+    sampling = service.create_sampling_client(model_path=sampler_path)
+    return {"service": service, "sampling": sampling, "tokenizer": tokenizer, "sampler_path": sampler_path}
+
+
+def sample_text(sampler, messages, max_tokens=200, temperature=0.0):
+    from tinker import types
+
+    tokenizer = sampler["tokenizer"]
+    prompt_ids = _token_ids(tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True))
+    response = sampler["sampling"].sample(
+        prompt=types.ModelInput.from_ints(prompt_ids),
+        num_samples=1,
+        sampling_params=types.SamplingParams(max_tokens=max_tokens, temperature=temperature),
+    ).result()
+    sequence = response.sequences[0] if response.sequences else None
+    if sequence is None:
+        return ""
+    return _strip_reasoning(tokenizer.decode(list(sequence.tokens)))
+
+
 register(TinkerSFTTrainer())
 register(TinkerSAOTrainer())

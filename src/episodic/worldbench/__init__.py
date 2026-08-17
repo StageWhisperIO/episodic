@@ -6,6 +6,7 @@ import tempfile
 
 from episodic import fidelity
 from episodic.worldmodel import wm_samples, ood_split
+from episodic.worldmodel import env as wm_env
 
 
 def oracle_predictor(sample):
@@ -145,6 +146,80 @@ def run_bench(episodes, predictor="prefix", *, one_per_trajectory=True, seed=0,
     if keep_samples:
         report["samples"] = scored
     return report
+
+
+def _resolve_predictor(predictor):
+    if isinstance(predictor, str):
+        if predictor not in NAMED_PREDICTORS:
+            raise ValueError(f"unknown predictor {predictor!r}; choose from {sorted(NAMED_PREDICTORS)}")
+        return NAMED_PREDICTORS[predictor], predictor
+    return predictor, getattr(predictor, "__name__", "callable")
+
+
+def rollout_bench(episodes, predictor="prefix", *, policy=None, history_budget=wm_env.HISTORY_BUDGET,
+                  max_turns=None, keep_rollouts=False):
+    predict, predictor_name = _resolve_predictor(predictor)
+
+    trajectories = []
+    rollouts = []
+    for episode in episodes:
+        result = wm_env.rollout(episode, predict, policy=policy, history_budget=history_budget, max_turns=max_turns)
+        trajectory = fidelity.trajectory_score(result["turns"])
+        trajectory["episode_id"] = result["episode_id"]
+        trajectory["truncated"] = result["truncated"]
+        trajectories.append(trajectory)
+        if keep_rollouts:
+            rollouts.append(result)
+
+    scored = [row for row in trajectories if row["n"] > 0]
+    report = {
+        "predictor": predictor_name,
+        "n_episodes": len(episodes),
+        "n_scored": len(scored),
+        "mean_composite": _mean([row["mean_composite"] for row in scored]),
+        "mean_final_composite": _mean([row["final_composite"] for row in scored]),
+        "mean_drift": _mean([row["drift"] for row in scored]),
+        "trajectories": trajectories,
+    }
+    if keep_rollouts:
+        report["rollouts"] = rollouts
+    return report
+
+
+def _render_trajectory(turns, key):
+    return "\n".join(f"ACTION: {turn['action']}\nOBSERVATION: {turn.get(key) or ''}" for turn in turns)
+
+
+def rollout_turing_test(episodes, predictor="prefix", *, policy=None, discriminator=None,
+                        history_budget=wm_env.HISTORY_BUDGET, max_turns=None, seed=0):
+    discriminator = discriminator or default_discriminator
+    predict, predictor_name = _resolve_predictor(predictor)
+    score = 0.0
+    scored = 0
+    for episode in episodes:
+        result = wm_env.rollout(episode, predict, policy=policy, history_budget=history_budget, max_turns=max_turns)
+        turns = result["turns"]
+        if not turns:
+            continue
+        scored += 1
+        real = _render_trajectory(turns, "target_observation")
+        fake = _render_trajectory(turns, "predicted_observation")
+        if real == fake:
+            score += 0.5
+            continue
+        real_pos = _real_position(str(result["episode_id"]), seed)
+        pair = [fake, fake]
+        pair[real_pos] = real
+        guess = discriminator(pair[0], pair[1])
+        if guess == real_pos:
+            score += 1.0
+    accuracy = score / scored if scored else None
+    return {
+        "predictor": predictor_name,
+        "n": scored,
+        "discriminator_accuracy": round(accuracy, 4) if scored else None,
+        "indistinguishability": round(1.0 - abs(accuracy - 0.5) * 2, 4) if scored else None,
+    }
 
 
 def _realness(text):
