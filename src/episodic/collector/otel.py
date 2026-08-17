@@ -164,9 +164,13 @@ class _OtelHandler(BaseHTTPRequestHandler):
         pass
 
 
-def serve_otel(host="127.0.0.1", port=4318, start=None):
+def build_otel_server(host="127.0.0.1", port=4318, start=None):
     handler = type("Handler", (_OtelHandler,), {"_start": start})
-    server = ThreadingHTTPServer((host, port), handler)
+    return ThreadingHTTPServer((host, port), handler)
+
+
+def serve_otel(host="127.0.0.1", port=4318, start=None):
+    server = build_otel_server(host, port, start)
     print(f"OTel receiver on http://{host}:{port}")
     try:
         server.serve_forever()

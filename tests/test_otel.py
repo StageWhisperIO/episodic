@@ -1,8 +1,13 @@
+import json
+import threading
+import urllib.request
+
 import pytest
 
 from episodic.collector.otel import (
     aggregate_usage,
     apply_usage_to_session,
+    build_otel_server,
     parse_metrics,
 )
 from episodic import store
@@ -78,3 +83,28 @@ def test_apply_usage_to_session(monkeypatch, tmp_path):
     assert meta["usage"]["input_tokens"] == 1000
     assert meta["usage"]["output_tokens"] == 500
     assert abs(meta["usage"]["cost_usd"] - 0.42) < 1e-9
+
+
+def test_build_otel_server_ingests_metrics_over_http(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    server = build_otel_server("127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        request = urllib.request.Request(
+            f"http://{host}:{port}/v1/metrics",
+            data=json.dumps(SAMPLE_OTLP).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        response = urllib.request.urlopen(request)
+        assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    meta = store.read_meta("s1")
+    assert meta["usage"]["input_tokens"] == 1000
+    assert meta["usage"]["output_tokens"] == 500
