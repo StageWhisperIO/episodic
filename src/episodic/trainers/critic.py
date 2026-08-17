@@ -80,6 +80,37 @@ class LocalCritic:
         return losses
 
 
+class TRLRewardModel:
+    def __init__(self, model, tokenizer, torch, device, model_dir):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.torch = torch
+        self.device = device
+        self.model_dir = model_dir
+
+    def value(self, texts):
+        encoded = self.tokenizer(
+            texts, return_tensors="pt", padding=True, truncation=True, max_length=MAX_CRITIC_TOKENS,
+        ).to(self.device)
+        with self.torch.no_grad():
+            logits = self.model(**encoded).logits.squeeze(-1)
+        return [float(self.torch.sigmoid(logit)) for logit in logits]
+
+
+def load_trl_reward_model(model_dir, device=None):
+    _require_torch("trl-reward-critic")
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    resolved_device = device or _pick_device(torch)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=1).to(resolved_device)
+    model.eval()
+    return TRLRewardModel(model, tokenizer, torch, resolved_device, model_dir)
+
+
 def pretrain_pairs_from_reward_rows(rows):
     pairs = []
     for row in rows:

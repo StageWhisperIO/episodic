@@ -4,8 +4,20 @@ from . import reward, testdetect
 
 HARD_PENALTY = 0.5
 JUDGE_TRAJECTORY_LIMIT = 4000
+JUDGE_TRUNCATION_MARKER = "\n...[trajectory truncated]...\n"
 SCOPED_FILES_TIGHT = 3
 SCOPED_FILES_LOOSE = 8
+
+
+def clip_trajectory(text, limit=JUDGE_TRAJECTORY_LIMIT):
+    if len(text) <= limit:
+        return text
+    budget = limit - len(JUDGE_TRUNCATION_MARKER)
+    if budget <= 0:
+        return text[-limit:]
+    head = budget // 3
+    tail = budget - head
+    return text[:head] + JUDGE_TRUNCATION_MARKER + text[-tail:]
 
 
 def _steps(episode):
@@ -117,7 +129,7 @@ CODING_RUBRIC = [
 def _judge_prompt(episode, criterion):
     from ..exporters import trajectory_text
 
-    trajectory = trajectory_text(episode)[:JUDGE_TRAJECTORY_LIMIT]
+    trajectory = clip_trajectory(trajectory_text(episode))
     return (
         "You are grading a coding agent trajectory against one rubric criterion.\n"
         f"Criterion: {criterion['desc']}\n"
@@ -135,6 +147,41 @@ def _parse_verdict(text):
 def openrubrics_judge(generate):
     def judge(episode, criterion):
         return _parse_verdict(generate(_judge_prompt(episode, criterion)))
+    return judge
+
+
+def safe_judge(judge):
+    def wrapped(episode, criterion):
+        try:
+            return judge(episode, criterion)
+        except Exception as exc:
+            return None, f"judge unavailable: {exc}"[:200]
+    return wrapped
+
+
+def default_judge(command=None, timeout=120):
+    from . import feedback
+
+    return safe_judge(openrubrics_judge(feedback.command_generate(command, timeout=timeout)))
+
+
+def critic_judge(critic, render=None):
+    if render is None:
+        from ..exporters import trajectory_text as render
+
+    cache = {}
+
+    def judge(episode, criterion):
+        episode_id = episode.get("id")
+        if episode_id is not None and episode_id in cache:
+            return cache[episode_id]
+        value = critic.value([render(episode)])[0]
+        score = max(0.0, min(1.0, float(value)))
+        result = (score, f"critic score {score:.3f}")
+        if episode_id is not None:
+            cache[episode_id] = result
+        return result
+
     return judge
 
 
