@@ -490,6 +490,39 @@ def cmd_loop(args):
         config["format"] = args.format
     if args.execute:
         config["execute"] = True
+    config.setdefault("judge", not args.no_judge)
+    if args.judge_cmd:
+        config["judge_cmd"] = args.judge_cmd
+    if args.judge_timeout is not None:
+        config["judge_timeout"] = args.judge_timeout
+    if args.epochs is not None:
+        config["epochs"] = args.epochs
+    if args.evaluator:
+        config.setdefault("evaluator", {})["type"] = args.evaluator
+    if args.router:
+        config["router"] = True
+    if args.sim_prefilter:
+        config["sim_prefilter"] = True
+    if args.sim_max_turns is not None:
+        config["sim_max_turns"] = args.sim_max_turns
+    if args.sim_backend in ("mlx", "tinker"):
+        from .worldmodel import inference as wm_inference
+
+        try:
+            if args.sim_backend == "mlx":
+                if not args.sim_model_dir:
+                    _fail("--sim-backend mlx needs --sim-model-dir")
+                config["sim_predictor"] = wm_inference.mlx_predictor(args.sim_model_dir)
+            else:
+                if not args.sim_sampler_path:
+                    _fail("--sim-backend tinker needs --sim-sampler-path")
+                config["sim_predictor"] = wm_inference.tinker_predictor(
+                    args.sim_sampler_path, base_model=args.sim_model_dir)
+        except trainers.TrainerUnavailable as exc:
+            print(f"episodic: {exc.hint}", file=sys.stderr)
+            return 0
+    elif args.sim_backend:
+        config["sim_predictor"] = args.sim_backend
 
     try:
         manifest = loop.run_loop(config)
@@ -503,12 +536,27 @@ def cmd_loop(args):
 
 
 def cmd_worldbench(args):
-    from . import worldbench
+    from . import worldbench, trainers
 
     episodes = store.load_episodes()
     if not episodes:
         _fail("no episodes to benchmark")
-    if args.cmd:
+    if args.backend:
+        from .worldmodel import inference as wm_inference
+
+        try:
+            if args.backend == "mlx":
+                if not args.model_dir:
+                    _fail("--backend mlx needs --model-dir")
+                predictor = wm_inference.mlx_predictor(args.model_dir)
+            else:
+                if not args.sampler_path:
+                    _fail("--backend tinker needs --sampler-path")
+                predictor = wm_inference.tinker_predictor(args.sampler_path, base_model=args.model_dir)
+        except trainers.TrainerUnavailable as exc:
+            print(f"episodic: {exc.hint}", file=sys.stderr)
+            return 0
+    elif args.cmd:
         if not args.execute:
             _fail("--cmd runs a shell command per turn; pass --execute to allow it")
         try:
@@ -517,6 +565,14 @@ def cmd_worldbench(args):
             _fail(str(exc))
     else:
         predictor = args.predictor
+
+    if args.rollout:
+        report = worldbench.rollout_bench(episodes, predictor, max_turns=args.max_turns)
+        if args.turing:
+            report["turing"] = worldbench.rollout_turing_test(
+                episodes, predictor, max_turns=args.max_turns, seed=args.seed)
+        _print_json(report)
+        return 0
 
     report = worldbench.run_bench(
         episodes, predictor,
@@ -554,6 +610,31 @@ def cmd_dashboard(args):
     from .dashboard.server import serve
 
     serve(args.host, args.port)
+    return 0
+
+
+def _set_tier(config, tier, backend, base_url, model):
+    if backend or base_url or model:
+        tier_config = config.setdefault(tier, {})
+        if backend:
+            tier_config["backend"] = backend
+        if base_url:
+            tier_config["base_url"] = base_url
+        if model:
+            tier_config["model"] = model
+
+
+def cmd_serve(args):
+    from .serving.server import serve
+
+    config = _load_train_config(args.config)
+    _set_tier(config, "distilled", args.distilled_backend, args.distilled_base_url, args.distilled_model)
+    _set_tier(config, "frontier", args.frontier_backend, args.frontier_base_url, args.frontier_model)
+    if args.router_model:
+        config["router_model_path"] = args.router_model
+    if args.router_threshold is not None:
+        config["router_threshold"] = args.router_threshold
+    serve(args.host, args.port, config)
     return 0
 
 
@@ -689,6 +770,29 @@ def build_parser():
     loop.add_argument("--out")
     loop.add_argument("--execute", action="store_true",
                       help="actually run replay-eval (clones repos and runs recorded test commands)")
+    loop.add_argument("--no-judge", action="store_true",
+                      help="disable the default agent-as-a-judge rubric scoring (on by default; "
+                           "needs ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN or --judge-cmd)")
+    loop.add_argument("--judge-cmd", help="judge command reading the prompt on stdin "
+                                          "(default: $EPISODIC_LABELER_CMD or claude -p haiku)")
+    loop.add_argument("--judge-timeout", type=int, help="judge subprocess timeout in seconds (default: 120)")
+    loop.add_argument("--epochs", type=int, help="number of epochs to run (default: 1); the evaluator "
+                                                  "(judge/critic) only refreshes between epoch boundaries")
+    loop.add_argument("--evaluator", choices=["rubric_judge", "local_critic", "trl_reward"],
+                      help="co-evolving evaluator backend for the judge-only rubric criteria "
+                           "(default: rubric_judge, i.e. the plain agent-as-a-judge)")
+    loop.add_argument("--router", action="store_true",
+                      help="learn a cost-aware small-vs-frontier router from reward/validity difficulty "
+                           "signals and write <out>/router_model.json for `episodic serve --router-model`")
+    loop.add_argument("--sim-prefilter", action="store_true",
+                      help="rank holdout episodes with a cheap WorldModelEnv rollout before spending the "
+                           "real replay-eval budget, instead of arbitrary id order")
+    loop.add_argument("--sim-backend", choices=["prefix", "oracle", "empty", "echo", "mlx", "tinker"],
+                      help="predictor used by --sim-prefilter (default: prefix)")
+    loop.add_argument("--sim-model-dir", help="mlx model path/HF repo id or tinker base model id "
+                                              "(--sim-backend mlx/tinker)")
+    loop.add_argument("--sim-sampler-path", help="tinker sampler weights path (--sim-backend tinker, required)")
+    loop.add_argument("--sim-max-turns", type=int, help="cap sim rollout turns per episode")
     loop.set_defaults(func=cmd_loop)
 
     worldbench = sub.add_parser("worldbench", help="evaluate next-observation prediction (world-model fidelity)")
@@ -702,6 +806,15 @@ def build_parser():
     worldbench.add_argument("--seed", type=int, default=0)
     worldbench.add_argument("--turing", action="store_true",
                             help="also run the double-blind Turing-test discriminator")
+    worldbench.add_argument("--backend", choices=["mlx", "tinker"],
+                            help="use a real trained model as the predictor instead of --predictor/--cmd")
+    worldbench.add_argument("--model-dir", help="mlx model path/HF repo id (--backend mlx) or tinker base "
+                                                "model id (--backend tinker)")
+    worldbench.add_argument("--sampler-path", help="tinker sampler weights path (--backend tinker, required)")
+    worldbench.add_argument("--rollout", action="store_true",
+                            help="closed-loop trajectory rollout (WorldModelEnv) instead of per-turn "
+                                 "teacher-forced scoring")
+    worldbench.add_argument("--max-turns", type=int, help="cap rollout turns per episode (--rollout only)")
     worldbench.set_defaults(func=cmd_worldbench)
 
     doctor = sub.add_parser("doctor", help="run end-to-end self-checks on the install")
@@ -713,7 +826,29 @@ def build_parser():
     dashboard.add_argument("--port", type=int, default=4317)
     dashboard.set_defaults(func=cmd_dashboard)
 
+    serve_cmd = sub.add_parser("serve", help="thin OpenAI-compatible proxy/router for the promoted model")
+    serve_cmd.add_argument("--host", default="127.0.0.1")
+    serve_cmd.add_argument("--port", type=int, default=8000)
+    serve_cmd.add_argument("--config", help="serving config: JSON file or inline JSON "
+                                            "({'distilled': {...}, 'frontier': {...}})")
+    serve_cmd.add_argument("--distilled-backend", choices=["openai", "ollama", "vllm", "tinker"])
+    serve_cmd.add_argument("--distilled-base-url")
+    serve_cmd.add_argument("--distilled-model")
+    serve_cmd.add_argument("--frontier-backend", choices=["openai", "ollama", "vllm", "tinker"])
+    serve_cmd.add_argument("--frontier-base-url")
+    serve_cmd.add_argument("--frontier-model")
+    serve_cmd.add_argument("--router-model", help="path to a router_model.json trained by "
+                                                   "`episodic loop --router`, for cost-aware small-vs-frontier "
+                                                   "escalation instead of the plain char-count heuristic")
+    serve_cmd.add_argument("--router-threshold", type=float,
+                           help="escalation probability threshold for the learned router (default: 0.5)")
+    serve_cmd.set_defaults(func=cmd_serve)
+
     return parser
+
+
+def list_commands():
+    return sorted(build_parser()._subparsers._group_actions[0].choices)
 
 
 def _normalize_intent(args):

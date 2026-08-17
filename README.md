@@ -19,17 +19,40 @@ review, a revert, or a one-click rating.
 
 ---
 
-## Why it exists
+## The flywheel
 
-| Phase | Goal | What you get |
-| ----- | ---- | ------------ |
-| 1 | Plugin entry point | `/trace` commands inside Claude Code / Codex |
-| 2 | Invisible session capture | initial prompt, repo state, tool calls, edits, commands, tests, approvals, final diff |
-| 3 | Episode model | every session becomes one `CodingEpisode` (the central abstraction) |
-| 4 | Outcome linking | episode ↔ PR / CI / review / merge / revert |
-| 5 | Dataset export | SFT · DPO · Reward · RLDS · Parquet · JSONL |
-| 6 | Replay harness | re-run a task at its base commit with another model |
-| 7 | Offline RL | quality filter → SFT → preference pairs → reward model → RL batches → replay eval |
+Episodic is a closed loop, not a one-shot export tool:
+
+**capture → reward → distill → serve → co-evolve**
+
+1. **Capture** — hooks record every session invisibly (prompt, repo state, tool calls, edits,
+   commands, tests, approvals, final diff) and normalize it into one `CodingEpisode`.
+2. **Reward** — outcome signals (tests, PR merge/revert, human feedback) plus an optional
+   agent-as-a-judge rubric turn each episode into a `reward_vector`, on by default in `episodic loop`.
+3. **Distill** — `episodic loop` filters, trains a candidate model against a pluggable trainer
+   backend, and replay-evaluates it on held-out episodes before deciding to promote it.
+4. **Serve** — `episodic serve` fronts the promoted model behind a thin OpenAI-compatible proxy,
+   so any agent can point at it like any other endpoint.
+5. **Co-evolve** — traffic through that endpoint gets captured back through the same hooks, and
+   the judge/critic that scores episodes can itself be refreshed between loop epochs, so both the
+   data and the thing grading it keep moving.
+
+That's the whole idea: the model your agent talks to today produced the episodes that train
+tomorrow's model. Everything below is one piece of that loop, and each piece is also useful on
+its own — you get session summaries and PR notes before any of the ML machinery runs.
+
+### 3-command quickstart
+
+```bash
+pip install -e .                            # provides the `episodic` command
+episodic loop --config loop.json --execute   # filter -> train -> replay-eval -> promote
+episodic serve --port 8000                   # serve the promoted model
+# point your agent's OpenAI-compatible base_url at http://localhost:8000/v1
+```
+
+That's the 3-command version of the loop above. The rest of this README covers each piece in
+depth; the full walkthrough (what each step actually does, a worked example, and how it compares
+to World Model Optimizer) is in [`docs/flywheel.md`](docs/flywheel.md).
 
 ---
 
@@ -163,11 +186,44 @@ and scores the tests plus diff overlap — rather than a proxy.
 > plan (trainer, dataset path/row count, config, replay-eval plan). `--execute` is what actually trains
 > and runs replay-eval. Untrusted episode-derived test commands run without a shell; only your own
 > `replay_cmd` template runs via a shell.
->
-> **Running the tuned model back in the agent** is the open-model lane: Codex `--oss` or a
-> custom agent pointed at the tuned model dir, not hosted Claude Code.
 
-### 7. Verify & explore — testing tools + tutorials
+By default the loop also scores every episode with an agent-as-a-judge rubric
+(`rubric.openrubrics_judge`, wired in through `reward.reward_vector`) — the highest-leverage
+signal for the episodes that have no runnable test. It needs an authenticated `claude`/API-key
+command; pass `--no-judge` to skip it, or `--judge-cmd` to point at something else. A promoted
+run writes `<out>/promoted.json` with a `served_ref` — the model id or path `episodic serve`
+loads next.
+
+### 7. Serve the promoted model — `episodic serve`
+
+Once `episodic loop --execute` promotes a candidate, `episodic serve` fronts it with a thin,
+backend-agnostic OpenAI-compatible proxy — the same `ThreadingHTTPServer` pattern as
+`episodic dashboard`, forwarding rather than holding any weights itself.
+
+```bash
+episodic serve --port 8000
+```
+
+```bash
+episodic serve --port 8000 \
+  --distilled-backend ollama --distilled-base-url http://localhost:11434 \
+  --frontier-backend openai --frontier-model gpt-4o-mini
+```
+
+`GET /v1/models` and `POST /v1/chat/completions` (streaming + non-streaming) behave like any
+OpenAI-compatible endpoint. Left unconfigured, the `distilled` tier resolves straight from the
+latest `promoted.json`'s `served_ref`; a request routes there by default and escalates to the
+`frontier` tier on a cheap signal (a long request, `"model": "frontier"`, or a learned router
+trained via `episodic loop --router`). Backends are `openai` (any `base_url`), `ollama`, `vllm`,
+and `tinker` — pick whichever one is actually running your promoted checkpoint. Full reference:
+[`serving/README.md`](serving/README.md).
+
+This is the open-model lane: point Codex `--oss`, a custom agent, or anything else with an
+OpenAI-compatible client at `http://localhost:8000/v1`, not hosted Claude Code. If that agent
+also reports OTel telemetry, its traffic is exactly the kind of new episode the next
+`episodic loop` run trains on — the loop closes.
+
+### 8. Verify & explore — testing tools + tutorials
 
 A self-contained testing layer lets you check the install, generate realistic episodes
 without running a coding agent, and measure how well a model predicts environment
@@ -206,9 +262,20 @@ Claude Code / Codex  ──hooks──►  episodic ingest
    ▼              ▼                   ▼                   ▼                 ▼
  summaries     github-linker     dataset-exporters    replay-runner     rl-pipeline
  + PR notes    (PR/CI/merge)     (sft/dpo/reward/      (snapshot +       (filter→sft→pref→
- (no ML)       → outcome label    rlds/wm/parquet/      re-run model)     reward→rl→eval)
-                                  jsonl)
-                                                                  dashboard (browse + label)
+ (no ML)       → outcome label    rlds/wm/harbor/       re-run model)     reward→rl→eval)
+                                  molt/parquet/jsonl)                          │
+                                                                  dashboard    ▼
+                                                                (browse +   episodic loop
+                                                                 label)   (train→replay-eval→promote)
+                                                                                │  promoted.json
+                                                                                ▼  { served_ref }
+                                                                          episodic serve
+                                                                (OpenAI-compatible proxy/router)
+                                                                                │
+                                                    served traffic (OTLP) ◄─────┘
+                                                                │
+                                                                ▼
+                                                       back to episodic ingest, closing the loop
 ```
 
 ## The CodingEpisode
@@ -240,7 +307,7 @@ type CodingEpisode = {
 | `episodic summary [--episode ID] [--json]` | what changed, why, tests, missing tests, risky edits, PR notes, follow-ups |
 | `episodic mark <label>` | feedback: `useful`, `wrong`, `too_broad`, `too_slow`, `needed_human_rescue`, `accepted_as_is`, `accepted_after_edits` |
 | `episodic create-pr-notes` | suggested PR title + description |
-| `episodic export-episode --format <fmt> [--all]` | `sft` · `dpo` · `reward` · `rlds` · `wm` · `parquet` · `jsonl` |
+| `episodic export-episode --format <fmt> [--all]` | `sft` · `dpo` · `reward` · `rlds` · `wm` · `harbor` · `molt` · `parquet` · `jsonl` |
 | `episodic link [--pr URL \| --auto]` | attach PR / CI / merge / review outcome (uses `gh`) |
 | `episodic replay-task create \| run --replay ID --model M [--execute]` | snapshot / re-run a task (`run` only plans unless `--execute` clones + runs) |
 | `episodic worldbench [--predictor P] [--source-holdout] [--turing]` | benchmark next-observation prediction (world-model fidelity) |
@@ -248,7 +315,8 @@ type CodingEpisode = {
 | `episodic list` / `show ID [--validate]` | browse episodes |
 | `episodic dashboard [--port N]` | local web UI: browse + one-click labels |
 | `episodic train [dataset] --trainer T [--config]` | train on an exported dataset via a pluggable backend |
-| `episodic loop [--config] [--execute]` | filter → train → replay-eval → promote (plan-only unless `--execute`) |
+| `episodic loop [--config] [--execute] [--epochs N]` | filter → train → replay-eval → promote (plan-only unless `--execute`); judge-scored reward by default |
+| `episodic serve [--host] [--port] [--config]` | thin OpenAI-compatible proxy/router serving the latest promoted model |
 | `episodic schema dump` | regenerate `schemas/episode.schema.json` |
 
 ## Dataset formats
@@ -260,6 +328,11 @@ type CodingEpisode = {
 - **Reward** — `trajectory → reward_vector` (+ scalar composite)
 - **RLDS** — per-episode `observation / action / reward / is_terminal / discount` steps
 - **WM** — language-world-model samples: `history + action → next observation` as SFT messages
+- **Harbor** — one task package per verified episode (instruction + Dockerfile + captured test as
+  verifier + gold diff), for running under [Harbor](https://github.com/laude-institute/harbor);
+  see [`docs/harbor-interop.md`](docs/harbor-interop.md)
+- **Molt** — a prompt dataset + generated `Env` whose reward replays the captured verifier, for
+  [Molt](https://github.com/NVIDIA-NeMo/labs-molt)'s agentic RL; see [`docs/molt-interop.md`](docs/molt-interop.md)
 - **Parquet** — flattened analytics rows (falls back to JSONL without `pyarrow`)
 - **JSONL** — full episodes, one per line
 
@@ -291,6 +364,7 @@ Maps the conceptual components (initial prompt §11) to the Python package:
 | dataset-exporters | [`dataset-exporters/`](dataset-exporters/) → `src/episodic/exporters/` |
 | replay-runner | [`replay-runner/`](replay-runner/) → `src/episodic/replay/` |
 | dashboard | [`dashboard/`](dashboard/) → `src/episodic/dashboard/` |
+| serving | [`serving/`](serving/) → `src/episodic/serving/` (`episodic serve`: backend registry + router) |
 | rl-pipeline | [`rl-pipeline/`](rl-pipeline/) |
 | world model | `src/episodic/worldmodel/`, `fidelity/`, `worldbench/` (AgentWorld next-observation prediction) |
 | testing tools | `src/episodic/testing/` (episode factory), `selfcheck/` (`episodic doctor`) |
@@ -313,8 +387,18 @@ python notebooks/build.py                    # regenerate the tutorial notebooks
 
 ## Status
 
-Phases 1 through 7 are implemented end to end. The summaries and the reward vector are
-deliberately ML-free, so the tool is useful on day one; the exporters and RL pipeline produce
-real, schema-validated data that a training backend can use as-is.
+The capture-through-offline-RL phases (see `initial_prompt.md` §11) are implemented end to end.
+The summaries and the reward vector are deliberately ML-free, so the tool is useful on day one;
+the exporters and RL pipeline produce real, schema-validated data that a training backend can use
+as-is.
+
+The flywheel itself — `episodic loop` promoting a model, `episodic serve` fronting it, agent
+traffic flowing back through OTLP ingest, and a co-evolving judge/critic refreshed at loop epoch
+boundaries — is also implemented; see [`docs/roadmap.md`](docs/roadmap.md) for what's landed
+against each phase and [`docs/flywheel.md`](docs/flywheel.md) for the worked example. Routing
+defaults to a plain length-based heuristic; `episodic loop --router` learns a cost-aware one from
+accumulated reward/validity signals, but it hasn't been tuned against a large real workload yet,
+and the `local_critic` / `trl_reward` evaluator backends are best thought of as a first pass
+rather than a proven default.
 
 MIT licensed.
