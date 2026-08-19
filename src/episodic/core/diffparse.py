@@ -5,6 +5,16 @@ _NEW_FILE = re.compile(r"^\+\+\+ (?:b/)?(.+)$")
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$")
 
 
+def _normalize_block(text):
+    if not text or not text.strip():
+        return ""
+    return text.rstrip("\n") + "\n"
+
+
+def join_unified(blocks):
+    return "".join(_normalize_block(block) for block in blocks)
+
+
 def _finalize(block):
     if block is None:
         return None
@@ -26,7 +36,7 @@ def _finalize(block):
         "status": status,
         "additions": block["additions"],
         "deletions": block["deletions"],
-        "unified": "\n".join(block["lines"]).strip() or None,
+        "unified": _normalize_block("\n".join(block["lines"])) or None,
     }
 
 

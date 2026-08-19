@@ -26,18 +26,25 @@ def extract_diff(text):
 def apply_diff(diff_text, workspace):
     if not diff_text or not diff_text.strip():
         return False, "empty diff"
-    try:
-        result = subprocess.run(
-            ["git", "apply", "-"],
-            input=diff_text,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, str(exc)
-    return result.returncode == 0, result.stdout + result.stderr
+    if not diff_text.endswith("\n"):
+        diff_text += "\n"
+    log = ""
+    for extra in (["--recount"], ["--recount", "--3way"]):
+        try:
+            result = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", *extra, "-"],
+                input=diff_text,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        if result.returncode == 0:
+            return True, result.stdout + result.stderr
+        log = result.stdout + result.stderr
+    return False, log
 
 
 def _stub_generate(config):

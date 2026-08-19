@@ -73,6 +73,43 @@ def test_apply_diff_succeeds_against_a_scratch_repo(tmp_path):
     assert (repo / "mod.py").read_text() == "x = 2\n"
 
 
+def test_apply_diff_handles_missing_trailing_newline(tmp_path):
+    repo = _scratch_repo(tmp_path)
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2"
+    )
+
+    ok, output = modelrun.apply_diff(diff, repo)
+
+    assert ok is True
+    assert (repo / "mod.py").read_text() == "x = 2\n"
+
+
+def test_apply_diff_recounts_off_by_one_hunk_header(tmp_path):
+    repo = _scratch_repo(tmp_path)
+    (repo / "mod.py").write_text("a\nb\nc\n")
+    _git(str(repo), "commit", "-aqm", "grow")
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        "+z\n"
+        " a\n"
+        " b\n"
+    )
+
+    ok, output = modelrun.apply_diff(diff, repo)
+
+    assert ok is True
+    assert (repo / "mod.py").read_text() == "z\na\nb\nc\n"
+
+
 def test_apply_diff_fails_on_malformed_patch(tmp_path):
     repo = _scratch_repo(tmp_path)
 

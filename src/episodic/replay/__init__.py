@@ -9,7 +9,7 @@ from pathlib import Path
 
 from episodic import paths
 from episodic.schema import now_iso
-from episodic.core import testdetect, normalize
+from episodic.core import testdetect, normalize, diffparse
 from episodic.exporters import _captured_verifier
 
 _MIN_REPLAY_FREE_BYTES = 2 * 1024 ** 3
@@ -169,7 +169,7 @@ def create_replay(episode, start=None):
     (replay_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     (replay_dir / "prompt.txt").write_text(episode.get("intent", ""))
 
-    unified_diffs = "\n".join(d.get("unified", "") or "" for d in diffs)
+    unified_diffs = diffparse.join_unified(d.get("unified") for d in diffs)
     (replay_dir / "expected.diff").write_text(unified_diffs)
 
     return manifest

@@ -34,7 +34,9 @@ def _local_clone_episode(episode):
 
 
 def _unified_diff(episode):
-    return "\n".join(diff.get("unified", "") or "" for diff in episode.get("diffs", []))
+    from ..core import diffparse
+
+    return diffparse.join_unified(diff.get("unified") for diff in episode.get("diffs", []))
 
 
 def _oracle_diff_runner(unified_diff):

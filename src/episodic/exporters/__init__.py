@@ -444,8 +444,10 @@ def _test_script(verifier):
 
 
 def _solution_patch(ep):
-    parts = [d["unified"] for d in ep.get("diffs", []) if d.get("unified")]
-    return "\n".join(parts) if parts else None
+    from ..core import diffparse
+
+    patch = diffparse.join_unified(d.get("unified") for d in ep.get("diffs", []))
+    return patch or None
 
 
 def _task_metadata(ep, verifier):
