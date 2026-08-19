@@ -1,9 +1,31 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from episodic.replay import create_replay, run_replay, replay_id_for
+
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+
+
+def _git_repo(root, files):
+    root.mkdir(parents=True, exist_ok=True)
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.dev")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True
+    ).stdout.strip()
+    return sha
 
 
 def test_replay_id_for(sample_episode):
@@ -192,6 +214,58 @@ def test_run_replay_local_repo_diff_scoring(tmp_path, monkeypatch, sample_episod
     assert result["scores"]["diff_overlap"] == 1.0
 
 
+def test_cleanup_replay_removes_the_replay_dir(tmp_path, monkeypatch, sample_episode):
+    from episodic.replay import cleanup_replay
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+    replay_dir = tmp_path / "replays" / replay_id
+    assert replay_dir.exists()
+
+    assert cleanup_replay(replay_id) is True
+    assert not replay_dir.exists()
+
+
+def test_cleanup_replay_refuses_path_traversal(tmp_path, monkeypatch):
+    from episodic.replay import cleanup_replay
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "important.txt").write_text("do not delete")
+
+    assert cleanup_replay("../keep") is False
+    assert (outside / "important.txt").exists()
+
+
+def test_run_replay_execute_guards_against_low_disk(tmp_path, monkeypatch, sample_episode):
+    import shutil as _shutil
+
+    from episodic import replay as replay_mod
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    local = tmp_path / "localrepo_disk"
+    local.mkdir()
+    (local / ".git").mkdir()
+    (local / "mod.py").write_text("x = 1\n")
+    sample_episode["repo_state"]["remote_url"] = None
+    sample_episode["repo_state"]["root"] = str(local)
+    sample_episode["commands"] = []
+    manifest = create_replay(sample_episode)
+    replay_id = manifest["replay_id"]
+
+    usage = _shutil.disk_usage(str(tmp_path))
+    monkeypatch.setattr(replay_mod.shutil, "disk_usage",
+                        lambda _path: usage._replace(free=1024))
+
+    result = run_replay(replay_id, "test-model", execute=True)
+
+    assert "insufficient disk" in result["error"]
+    assert not (tmp_path / "replays" / replay_id / "workspace").exists()
+
+
 def test_run_replay_local_fallback_refuses_non_git_dir(tmp_path, monkeypatch, sample_episode):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
     monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
@@ -226,6 +300,101 @@ def test_run_replay_execute_never_raises_on_bad_remote(tmp_path, monkeypatch, sa
     assert "error" in result
     assert "clone failed" in result["error"]
     assert not (tmp_path / "replays" / replay_id / "workspace").exists()
+
+
+def test_run_replay_executes_piped_shell_test_commands(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    origin = tmp_path / "origin_pipe"
+    command = "python3 -m pytest -q test_ok.py 2>&1 | tail -20"
+    sha = _git_repo(origin, {"test_ok.py": "def test_ok():\n    assert True\n"})
+
+    sample_episode["repo_state"].update({"root": str(origin), "remote_url": str(origin), "base_commit": sha})
+    sample_episode["commands"] = [{"ts": "t", "command": command, "cwd": str(origin), "exit_code": 0,
+                                   "output_excerpt": "1 passed", "is_test": True}]
+    sample_episode["tests"] = [{"ts": "t", "framework": "pytest", "command": command,
+                                "passed": 1, "failed": 0, "skipped": 0, "total": 1, "ok": True}]
+    manifest = create_replay(sample_episode)
+    assert manifest["test_command"] == command
+
+    result = run_replay(manifest["replay_id"], "test-model", execute=True)
+
+    assert result["tests"] is not None
+    assert result["tests"]["ok"] is True
+    assert result["tests"]["total"] == 1
+
+
+def test_run_replay_relativizes_absolute_path_test_commands(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    origin = tmp_path / "origin_abs"
+    sha = _git_repo(origin, {"test_ok.py": "def test_ok():\n    assert True\n"})
+    command = f"python3 -m pytest -q {origin}/test_ok.py"
+
+    sample_episode["repo_state"].update({"root": str(origin), "remote_url": str(origin), "base_commit": sha})
+    sample_episode["commands"] = [{"ts": "t", "command": command, "cwd": str(origin), "exit_code": 0,
+                                   "output_excerpt": "1 passed", "is_test": True}]
+    sample_episode["tests"] = [{"ts": "t", "framework": "pytest", "command": command,
+                                "passed": 1, "failed": 0, "skipped": 0, "total": 1, "ok": True}]
+    manifest = create_replay(sample_episode)
+    assert str(origin) not in manifest["test_command"]
+
+    result = run_replay(manifest["replay_id"], "test-model", execute=True)
+
+    assert result["workspace"] != str(origin)
+    assert result["tests"] is not None
+    assert result["tests"]["ok"] is True
+
+
+def test_run_replay_runs_test_command_from_captured_subdir_cwd(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    origin = tmp_path / "origin_subdir"
+    sha = _git_repo(origin, {
+        "readme.txt": "top level\n",
+        "backend_svc/spec_check.py": "def test_ok():\n    assert True\n",
+    })
+    command = "python3 -m pytest -q spec_check.py"
+
+    sample_episode["repo_state"].update({"root": str(origin), "remote_url": str(origin), "base_commit": sha})
+    sample_episode["commands"] = [{"ts": "t", "command": command, "cwd": str(origin / "backend_svc"),
+                                   "exit_code": 0, "output_excerpt": "1 passed", "is_test": True}]
+    sample_episode["tests"] = [{"ts": "t", "framework": "pytest", "command": command,
+                                "passed": 1, "failed": 0, "skipped": 0, "total": 1, "ok": True}]
+    manifest = create_replay(sample_episode)
+    assert manifest["test_cwd"] == "backend_svc"
+
+    result = run_replay(manifest["replay_id"], "test-model", execute=True)
+
+    assert result["tests"] is not None
+    assert result["tests"]["ok"] is True
+
+
+def test_run_replay_uses_an_injected_runner_over_the_shell_template(tmp_path, monkeypatch, sample_episode):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path))
+    monkeypatch.delenv("EPISODIC_REPLAY_CMD", raising=False)
+    origin = tmp_path / "origin_runner"
+    sha = _git_repo(origin, {"mod.py": "x = 1\n"})
+    sample_episode["repo_state"].update({"root": str(origin), "remote_url": str(origin), "base_commit": sha})
+    sample_episode["commands"] = []
+
+    calls = []
+
+    def runner(model, workspace, prompt_text):
+        calls.append((model, str(workspace), prompt_text))
+        (workspace / "new_from_runner.py").write_text("z = 1\n")
+        return "ran via injected runner", 0
+
+    manifest = create_replay(sample_episode)
+
+    result = run_replay(
+        manifest["replay_id"], "candidate-model", execute=True,
+        runner=runner, runner_cmd="this-should-never-run {model} {workspace} {prompt_file}",
+    )
+
+    assert result["ran"] is True
+    assert calls and calls[0][0] == "candidate-model"
+    assert "new_from_runner.py" in result["produced_files"]
 
 
 def test_run_replay_invalid_runner_template_returns_error(tmp_path, monkeypatch, sample_episode):

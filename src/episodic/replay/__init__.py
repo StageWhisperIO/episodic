@@ -9,7 +9,10 @@ from pathlib import Path
 
 from episodic import paths
 from episodic.schema import now_iso
-from episodic.core import testdetect
+from episodic.core import testdetect, normalize
+from episodic.exporters import _captured_verifier
+
+_MIN_REPLAY_FREE_BYTES = 2 * 1024 ** 3
 
 
 def replay_id_for(episode):
@@ -18,6 +21,20 @@ def replay_id_for(episode):
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", suffix)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
     return "rp_" + (safe or "unknown") + "_" + digest
+
+
+def cleanup_replay(replay_id, start=None):
+    replays_root = paths.replays_dir(start).resolve()
+    replay_dir = (replays_root / replay_id).resolve()
+    try:
+        if os.path.commonpath([str(replay_dir), str(replays_root)]) != str(replays_root):
+            return False
+    except ValueError:
+        return False
+    if replay_dir == replays_root or replay_dir.is_symlink() or not replay_dir.exists():
+        return False
+    shutil.rmtree(replay_dir, ignore_errors=True)
+    return not replay_dir.exists()
 
 
 def infer_test_command(repo_root, episode):
@@ -57,17 +74,56 @@ def collect_lockfiles(repo_root):
     return result
 
 
+def _relative_subdir(cwd, repo_root):
+    if not cwd or not repo_root:
+        return None
+    relative = normalize.relativize_command(cwd, repo_root)
+    if relative in (cwd, "."):
+        return None
+    return relative[2:] if relative.startswith("./") else relative
+
+
+def _matching_command_cwd(command, episode):
+    for cmd in episode.get("commands", []):
+        if cmd.get("command") == command:
+            return cmd.get("cwd")
+    return None
+
+
+def _needs_explicit_cwd(command, subdir):
+    return bool(subdir) and subdir not in command
+
+
+def _resolved_cwd(command, cwd, repo_root):
+    subdir = _relative_subdir(cwd, repo_root)
+    return subdir if _needs_explicit_cwd(command, subdir) else None
+
+
+def _resolve_test_command(episode, repo_root):
+    verifier = _captured_verifier(episode)
+    if verifier is not None:
+        command = normalize.relativize_command(verifier["command"], repo_root)
+        test_cwd = _resolved_cwd(command, _matching_command_cwd(verifier["command"], episode), repo_root)
+        return command, test_cwd
+
+    test_command = infer_test_command(repo_root or "", episode) if repo_root else None
+    if test_command is not None:
+        return test_command, None
+
+    for cmd in episode.get("commands", []):
+        if cmd.get("is_test"):
+            command = normalize.relativize_command(cmd["command"], repo_root)
+            return command, _resolved_cwd(command, cmd.get("cwd"), repo_root)
+
+    return None, None
+
+
 def create_replay(episode, start=None):
     replay_id = replay_id_for(episode)
     repo_state = episode.get("repo_state", {})
     repo_root = repo_state.get("root")
 
-    test_command = infer_test_command(repo_root or "", episode) if repo_root else None
-    if test_command is None:
-        for cmd in episode.get("commands", []):
-            if cmd.get("is_test"):
-                test_command = cmd["command"]
-                break
+    test_command, test_cwd = _resolve_test_command(episode, repo_root)
 
     lockfiles = collect_lockfiles(repo_root) if repo_root and Path(repo_root).exists() else []
 
@@ -95,6 +151,7 @@ def create_replay(episode, start=None):
         "branch": repo_state.get("branch"),
         "initial_prompt": episode.get("intent", ""),
         "test_command": test_command,
+        "test_cwd": test_cwd,
         "lockfiles": lockfiles,
         "expected_outcome": {
             "files_changed": files_changed,
@@ -182,7 +239,7 @@ def _jaccard(set_a, set_b):
     return len(set_a & set_b) / len(union)
 
 
-def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
+def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, runner=None):
     replays_root = paths.replays_dir(start).resolve()
     replay_dir = (replays_root / replay_id).resolve()
     if os.path.commonpath([str(replay_dir), str(replays_root)]) != str(replays_root):
@@ -214,7 +271,18 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
     base_commit = manifest.get("base_commit")
     repo = manifest.get("repo")
     test_command = manifest.get("test_command")
+    test_cwd = manifest.get("test_cwd")
     expected_files = set(manifest.get("expected_outcome", {}).get("files_changed", []))
+
+    if remote_url or repo:
+        try:
+            free_bytes = shutil.disk_usage(str(replays_root)).free
+        except OSError:
+            free_bytes = None
+        if free_bytes is not None and free_bytes < _MIN_REPLAY_FREE_BYTES:
+            return {"error": f"insufficient disk for replay workspace: {free_bytes} bytes free "
+                             f"(need >= {_MIN_REPLAY_FREE_BYTES})", "replay_id": replay_id,
+                    "model": model, "executed": True, "scores": None}
 
     workspace = replay_dir / "workspace"
     workspace_created = False
@@ -261,7 +329,13 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
     runner_output = None
     runner_rc = None
 
-    if runner_template and workspace_created:
+    if runner is not None and workspace_created:
+        try:
+            runner_output, runner_rc = runner(model, workspace, manifest.get("initial_prompt", ""))
+        except Exception as exc:
+            runner_output, runner_rc = f"runner raised: {exc}", -1
+        ran = True
+    elif runner_template and workspace_created:
         try:
             cmd_str = runner_template.format(
                 model=shlex.quote(model),
@@ -282,7 +356,8 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
 
     if workspace_created and test_command:
         try:
-            out, rc = _run_cmd(shlex.split(test_command), cwd=str(workspace), timeout=120)
+            test_cwd_dir = str(workspace / test_cwd) if test_cwd else str(workspace)
+            out, rc = _run_cmd(test_command, cwd=test_cwd_dir, timeout=120, shell=True)
             ts = now_iso()
             tests_result = testdetect.detect_test_run(test_command, out, ts, exit_code=rc)
         except Exception:
@@ -330,7 +405,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
             "diff_overlap": diff_overlap,
             "total": total_score,
         }
-        note = None
+        note = "no test command captured for this episode" if not test_command else None
 
     return {
         "replay_id": replay_id,
@@ -339,6 +414,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False):
         "dry_run": dry_run,
         "workspace": str(workspace) if workspace_created else None,
         "test_command": test_command,
+        "test_cwd": test_cwd,
         "tests": tests_result,
         "produced_files": produced_files,
         "scores": scores,
