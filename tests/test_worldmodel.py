@@ -63,3 +63,42 @@ def test_wm_exporter_writes_messages(tmp_path):
     assert rows
     assert all(len(r["messages"]) == 3 for r in rows)
     assert all(r["messages"][0]["role"] == "system" for r in rows)
+
+
+def _big_episode(episode_id, num_files, observation_size=2000):
+    ep = make_episode(episode_id, files=tuple(f"f{i}.py" for i in range(num_files)))
+    for step in ep["steps"]:
+        if step.get("observation"):
+            step["observation"] = step["observation"] + ("x" * observation_size)
+    return ep
+
+
+def test_render_history_is_bounded_by_history_budget():
+    ep = _big_episode("ep_wm_budget", num_files=50)
+    last_index = len(ep["steps"]) - 1
+    history = worldmodel.render_history(ep, last_index, history_budget=1000)
+    assert len(history) <= 1000 + len(f"INTENT: {ep['intent']}\n") + len("ACTION: \nOBSERVATION:") + 200
+
+
+def test_render_history_default_budget_caps_growth_for_long_episodes():
+    ep = _big_episode("ep_wm_budget_default", num_files=200)
+    last_index = len(ep["steps"]) - 1
+    history = worldmodel.render_history(ep, last_index)
+    assert len(history) < 2 * worldmodel.HISTORY_BUDGET
+
+
+def test_expand_turns_history_length_does_not_grow_unbounded_with_episode_size():
+    small = _big_episode("ep_wm_small", num_files=5)
+    big = _big_episode("ep_wm_big", num_files=100)
+    small_samples = worldmodel.expand_turns(small)
+    big_samples = worldmodel.expand_turns(big)
+    max_small = max(len(s["history"]) for s in small_samples)
+    max_big = max(len(s["history"]) for s in big_samples)
+    assert max_big < max_small * 5
+
+
+def test_wm_samples_respects_custom_history_budget():
+    ep = _big_episode("ep_wm_custom_budget", num_files=30)
+    samples = worldmodel.wm_samples([ep], history_budget=200)
+    assert samples
+    assert all(len(s["history"]) < 2000 for s in samples)

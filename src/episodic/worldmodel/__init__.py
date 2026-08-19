@@ -7,6 +7,8 @@ WM_SYSTEM = (
     "the observation, faithfully reflecting tool execution, file-system state, and prior turns."
 )
 
+HISTORY_BUDGET = 4000
+
 
 def _frac(*parts):
     digest = hashlib.sha256(":".join(str(p) for p in parts).encode("utf-8")).hexdigest()
@@ -37,20 +39,34 @@ def _action_repr(step):
     return f"{tool}({compact})" + (f" @ {cwd}" if cwd else "")
 
 
-def render_history(episode, upto_index):
-    lines = [f"INTENT: {episode.get('intent', '')}"]
-    steps = episode.get("steps", [])
-    for j in range(upto_index):
+def _budgeted_tail_context(steps, upto_index, history_budget):
+    tail = []
+    collected = 0
+    target = history_budget + 200
+    for j in range(upto_index - 1, -1, -1):
         step = steps[j]
-        lines.append(f"ACTION: {_action_repr(step)}")
-        obs = (step.get("observation") or "")[:400]
-        lines.append(f"OBSERVATION: {obs}")
+        obs_line = f"OBSERVATION: {(step.get('observation') or '')[:400]}"
+        action_line = f"ACTION: {_action_repr(step)}"
+        tail.append(obs_line)
+        tail.append(action_line)
+        collected += len(obs_line) + len(action_line) + 2
+        if collected >= target:
+            break
+    tail.reverse()
+    return "\n".join(tail)[-history_budget:] if tail else ""
+
+
+def render_history(episode, upto_index, history_budget=HISTORY_BUDGET):
+    intent_line = f"INTENT: {episode.get('intent', '')}"
+    steps = episode.get("steps", [])
+    context = _budgeted_tail_context(steps, upto_index, history_budget)
+    lines = [intent_line, context] if context else [intent_line]
     lines.append(f"ACTION: {_action_repr(steps[upto_index])}")
     lines.append("OBSERVATION:")
     return "\n".join(lines)
 
 
-def expand_turns(episode):
+def expand_turns(episode, history_budget=HISTORY_BUDGET):
     samples = []
     steps = episode.get("steps", [])
     for index, step in enumerate(steps):
@@ -64,7 +80,7 @@ def expand_turns(episode):
             "source": source_key(episode),
             "domain": (episode.get("labels") or ["unknown"])[0],
             "intent": episode.get("intent", ""),
-            "history": render_history(episode, index),
+            "history": render_history(episode, index, history_budget=history_budget),
             "action": _action_repr(step),
             "prev_observation": prev,
             "target_observation": observation,
@@ -72,10 +88,10 @@ def expand_turns(episode):
     return samples
 
 
-def wm_samples(episodes, one_per_trajectory=False, seed=0):
+def wm_samples(episodes, one_per_trajectory=False, seed=0, history_budget=HISTORY_BUDGET):
     out = []
     for episode in episodes:
-        samples = expand_turns(episode)
+        samples = expand_turns(episode, history_budget=history_budget)
         if not samples:
             continue
         if one_per_trajectory:

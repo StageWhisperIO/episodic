@@ -1,6 +1,5 @@
-from . import WM_SYSTEM, _action_repr
+from . import WM_SYSTEM, HISTORY_BUDGET, _action_repr
 
-HISTORY_BUDGET = 4000
 OBSERVATION_BUDGET = 400
 
 
