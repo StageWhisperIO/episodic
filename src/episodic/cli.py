@@ -512,7 +512,8 @@ def cmd_loop(args):
             if args.sim_backend == "mlx":
                 if not args.sim_model_dir:
                     _fail("--sim-backend mlx needs --sim-model-dir")
-                config["sim_predictor"] = wm_inference.mlx_predictor(args.sim_model_dir)
+                config["sim_predictor"] = wm_inference.mlx_predictor(
+                    args.sim_model_dir, adapter_path=args.sim_adapter_path)
             else:
                 if not args.sim_sampler_path:
                     _fail("--sim-backend tinker needs --sim-sampler-path")
@@ -523,6 +524,20 @@ def cmd_loop(args):
             return 0
     elif args.sim_backend:
         config["sim_predictor"] = args.sim_backend
+
+    if args.eval_backend:
+        config["eval_backend"] = args.eval_backend
+    if args.eval_model_dir:
+        config["eval_model_dir"] = args.eval_model_dir
+    if args.eval_sampler_path:
+        config["eval_sampler_path"] = args.eval_sampler_path
+    eval_backend_config = {}
+    if args.eval_base_url:
+        eval_backend_config["base_url"] = args.eval_base_url
+    if args.eval_api_key:
+        eval_backend_config["api_key"] = args.eval_api_key
+    if eval_backend_config:
+        config["eval_backend_config"] = eval_backend_config
 
     try:
         manifest = loop.run_loop(config)
@@ -548,7 +563,7 @@ def cmd_worldbench(args):
             if args.backend == "mlx":
                 if not args.model_dir:
                     _fail("--backend mlx needs --model-dir")
-                predictor = wm_inference.mlx_predictor(args.model_dir)
+                predictor = wm_inference.mlx_predictor(args.model_dir, adapter_path=args.adapter_path)
             else:
                 if not args.sampler_path:
                     _fail("--backend tinker needs --sampler-path")
@@ -583,6 +598,108 @@ def cmd_worldbench(args):
     if args.turing:
         report["turing"] = worldbench.turing_test(
             episodes, predictor, one_per_trajectory=not args.all_turns, seed=args.seed)
+    _print_json(report)
+    return 0
+
+
+def _wm_fidelity_report(episodes, predictor, max_turns, seed):
+    from . import worldbench
+
+    rollout = worldbench.rollout_bench(episodes, predictor, max_turns=max_turns)
+    turing = worldbench.rollout_turing_test(episodes, predictor, max_turns=max_turns, seed=seed)
+    return {
+        "mean_composite": rollout["mean_composite"],
+        "mean_drift": rollout["mean_drift"],
+        "n_scored": rollout["n_scored"],
+        "discriminator_accuracy": turing["discriminator_accuracy"],
+        "indistinguishability": turing["indistinguishability"],
+    }
+
+
+def cmd_wm_validate(args):
+    from pathlib import Path
+
+    from . import exporters, loop, trainers, worldbench
+    from .worldmodel import inference as wm_inference
+    from .worldmodel import validate as wm_validate
+
+    episodes = [ep for ep in store.load_episodes() if ep.get("steps")]
+    if not episodes:
+        _fail("no episodes with steps to validate")
+
+    train_eps, holdout_eps = loop.split_episodes(episodes, args.holdout_frac, args.seed)
+    if not holdout_eps:
+        _fail("holdout split is empty; lower --holdout-frac or add more episodes")
+
+    out = Path(args.out) if args.out else paths.exports_dir() / "wm_validate"
+    out.mkdir(parents=True, exist_ok=True)
+
+    train_config = _load_train_config(args.train_config)
+
+    predictor = None
+    predictor_info = {"backend": None, "base_model": None, "adapter_path": None, "trained": False}
+    dataset_info = None
+
+    if args.adapter_path or args.execute:
+        export_result = exporters.export(train_eps, "wm", str(out / "dataset"))
+        dataset_info = {"files": export_result["files"], "count": export_result.get("count")}
+
+        adapter_path = args.adapter_path
+        base_model = args.model or train_config.get("model")
+        trained = False
+        if adapter_path is None:
+            try:
+                train_manifest = trainers.train(
+                    "mlx-sft", export_result["files"][0], str(out / "candidate"), train_config)
+            except trainers.TrainerUnavailable as exc:
+                print(f"episodic: {exc.hint}", file=sys.stderr)
+                return 0
+            result = train_manifest.get("result") or {}
+            adapter_path = result.get("model_dir")
+            base_model = base_model or result.get("base_model")
+            trained = True
+        try:
+            predictor = wm_inference.mlx_predictor(base_model, adapter_path=adapter_path)
+        except trainers.TrainerUnavailable as exc:
+            print(f"episodic: {exc.hint}", file=sys.stderr)
+            return 0
+        predictor_info = {
+            "backend": "mlx", "base_model": base_model, "adapter_path": adapter_path, "trained": trained,
+        }
+
+    fidelity_report = {
+        name: _wm_fidelity_report(holdout_eps, name, args.max_turns, args.seed)
+        for name in ("oracle", "prefix", "empty")
+    }
+    if predictor is not None:
+        fidelity_report["trained"] = _wm_fidelity_report(holdout_eps, predictor, args.max_turns, args.seed)
+
+    replay_correlation = None
+    if args.replay_correlate:
+        if not args.execute:
+            _fail("--replay-correlate needs --execute (clones repos and runs recorded test commands)")
+        sim_predictor = predictor or worldbench.NAMED_PREDICTORS["prefix"]
+        if args.replay_correlate_all:
+            correlate_eps = holdout_eps
+        else:
+            correlate_eps = [ep for ep in holdout_eps if wm_validate.has_captured_verifier(ep)]
+        sim = wm_validate.sim_scores(correlate_eps, sim_predictor, max_turns=args.max_turns)
+        real = wm_validate.offline_replay_scores(correlate_eps)
+        replay_correlation = wm_validate.correlate(sim, real)
+        replay_correlation["verifier_filtered"] = not args.replay_correlate_all
+        replay_correlation["n_holdout"] = len(holdout_eps)
+
+    report = {
+        "holdout_frac": args.holdout_frac,
+        "seed": args.seed,
+        "n_train": len(train_eps),
+        "n_holdout": len(holdout_eps),
+        "dataset": dataset_info,
+        "predictor": predictor_info,
+        "fidelity": fidelity_report,
+        "replay_correlation": replay_correlation,
+    }
+    (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     _print_json(report)
     return 0
 
@@ -792,7 +909,20 @@ def build_parser():
     loop.add_argument("--sim-model-dir", help="mlx model path/HF repo id or tinker base model id "
                                               "(--sim-backend mlx/tinker)")
     loop.add_argument("--sim-sampler-path", help="tinker sampler weights path (--sim-backend tinker, required)")
+    loop.add_argument("--sim-adapter-path", help="mlx LoRA adapter dir layered on --sim-model-dir "
+                                                  "(--sim-backend mlx)")
     loop.add_argument("--sim-max-turns", type=int, help="cap sim rollout turns per episode")
+    loop.add_argument("--eval-backend", choices=["stub", "mlx", "tinker", "serving"],
+                      help="model-driven runner for --execute replay-eval: generates a unified diff per "
+                           "episode and git-applies it before running the captured test command, instead of "
+                           "leaving candidate/base workspaces at the bare base commit (default: none)")
+    loop.add_argument("--eval-model-dir", help="mlx model path/HF repo id or tinker base model id "
+                                                "(--eval-backend mlx/tinker)")
+    loop.add_argument("--eval-sampler-path", help="tinker sampler weights path (--eval-backend tinker, required)")
+    loop.add_argument("--eval-base-url", help="upstream OpenAI-compatible base_url for --eval-backend serving "
+                                              "(required unless --eval-api-key is set; refuses the public "
+                                              "OpenAI API by default)")
+    loop.add_argument("--eval-api-key", help="api key for --eval-backend serving")
     loop.set_defaults(func=cmd_loop)
 
     worldbench = sub.add_parser("worldbench", help="evaluate next-observation prediction (world-model fidelity)")
@@ -810,12 +940,41 @@ def build_parser():
                             help="use a real trained model as the predictor instead of --predictor/--cmd")
     worldbench.add_argument("--model-dir", help="mlx model path/HF repo id (--backend mlx) or tinker base "
                                                 "model id (--backend tinker)")
+    worldbench.add_argument("--adapter-path", help="mlx LoRA adapter dir layered on --model-dir (--backend mlx)")
     worldbench.add_argument("--sampler-path", help="tinker sampler weights path (--backend tinker, required)")
     worldbench.add_argument("--rollout", action="store_true",
                             help="closed-loop trajectory rollout (WorldModelEnv) instead of per-turn "
                                  "teacher-forced scoring")
     worldbench.add_argument("--max-turns", type=int, help="cap rollout turns per episode (--rollout only)")
     worldbench.set_defaults(func=cmd_worldbench)
+
+    wm_validate = sub.add_parser(
+        "wm-validate",
+        help="train/load a world model, validate its fidelity against prefix/empty/oracle on a real "
+             "holdout split, and optionally correlate sim rollout scores with real replay-eval scores",
+    )
+    wm_validate.add_argument("--out", help="output dir (default: <home>/exports/wm_validate)")
+    wm_validate.add_argument("--holdout-frac", type=float, default=0.25,
+                             help="fraction of episodes held out for fidelity scoring (default: 0.25)")
+    wm_validate.add_argument("--seed", type=int, default=0)
+    wm_validate.add_argument("--max-turns", type=int, help="cap rollout turns per episode")
+    wm_validate.add_argument("--model", help="mlx base model id (default: mlx-sft trainer default, "
+                                              "or --train-config's 'model' key)")
+    wm_validate.add_argument("--adapter-path", help="reuse an already-trained mlx LoRA adapter instead of "
+                                                     "training a fresh one with --execute")
+    wm_validate.add_argument("--train-config", help="mlx-sft training config: JSON file or inline JSON")
+    wm_validate.add_argument("--execute", action="store_true",
+                             help="actually run local mlx-sft training on the train split (no Tinker, "
+                                  "no network billing; needs mlx-lm on Apple Silicon)")
+    wm_validate.add_argument("--replay-correlate", action="store_true",
+                             help="also score the holdout split with a real offline replay-eval (git clone "
+                                  "+ recorded test command) and correlate it with the sim rollout scores; "
+                                  "needs --execute")
+    wm_validate.add_argument("--replay-correlate-all", action="store_true",
+                             help="correlate over the whole holdout instead of only episodes with a captured "
+                                  "test verifier; the replay score for verifier-less episodes is diff-overlap "
+                                  "only, so the correlation conflates two different targets (default: off)")
+    wm_validate.set_defaults(func=cmd_wm_validate)
 
     doctor = sub.add_parser("doctor", help="run end-to-end self-checks on the install")
     doctor.add_argument("--json", action="store_true")

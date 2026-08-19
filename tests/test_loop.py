@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -607,6 +608,147 @@ def test_run_loop_sim_prefilter_selects_hardest_holdout_episodes_for_real_replay
     evaluated_ids = {row["episode_id"] for row in manifest["scores"]}
     assert evaluated_ids == hard_ids
     assert evaluated_ids != set(sorted(holdout_ids)[:3])
+
+
+def _model_diff(sha):
+    return (
+        "diff --git a/f.py b/f.py\n"
+        f"index {sha[:7]}..0000000 100644\n"
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+
+
+def test_resolve_eval_runner_is_none_when_eval_backend_is_unset():
+    assert loop._resolve_eval_runner({}, None) is None
+
+
+def test_resolve_eval_runner_builds_a_working_callable_for_the_stub_backend(tmp_path, monkeypatch):
+    origin, sha = _origin_repo(tmp_path)
+    diff = _model_diff(sha)
+    runner = loop._resolve_eval_runner(
+        {"eval_backend": "stub", "eval_stub": {"candidate-model": diff}}, None)
+
+    assert callable(runner)
+    output, rc = runner("candidate-model", Path(origin), "fix f.py")
+    assert rc == 0
+    assert (Path(origin) / "f.py").read_text() == "x = 2\n"
+
+
+def test_eval_one_with_stub_runner_produces_distinct_paired_scores(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    episode = _episode("ep_pairtest", origin, sha)
+
+    runner = loop._resolve_eval_runner(
+        {"eval_backend": "stub", "eval_stub": {"candidate-model": _model_diff(sha)}}, None)
+
+    row = loop._eval_one(episode, "candidate-model", "base-model", None, None, runner=runner)
+
+    assert row["candidate"] is not None
+    assert row["base"] is not None
+    assert row["candidate"] > row["base"]
+
+
+def _breaking_diff():
+    return (
+        "diff --git a/test_f.py b/test_f.py\n"
+        "index 0000000..0000000 100644\n"
+        "--- a/test_f.py\n"
+        "+++ b/test_f.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def test_ok():\n"
+        "-    assert True\n"
+        "+    assert False\n"
+    )
+
+
+def test_run_loop_eval_backend_stub_keeps_base_when_the_candidate_diff_regresses(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    def stub(model, messages):
+        return _breaking_diff() if "candidate" in model else ""
+
+    config = {
+        "trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+        "min_composite": 0.0, "train_config": {"command": "true"},
+        "base_model": "base-model", "execute": True,
+        "eval_backend": "stub", "eval_stub": stub,
+        "out": str(tmp_path / "loopout"),
+    }
+    manifest = loop.run_loop(config)
+
+    assert manifest["executed"] is True
+    assert manifest["evaluated"] >= 1
+    assert manifest["candidate_mean"] < manifest["base_mean"]
+    assert manifest["decision"] == "keep_base"
+    assert not (tmp_path / "loopout" / "promoted.json").exists()
+
+
+def test_run_loop_eval_backend_stub_promotes_when_the_candidate_diff_helps(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    calls = []
+
+    def stub(model, messages):
+        calls.append(model)
+        return _model_diff(sha) if "candidate" in model else ""
+
+    config = {
+        "trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+        "min_composite": 0.0, "train_config": {"command": "true"},
+        "base_model": "base-model", "execute": True,
+        "eval_backend": "stub", "eval_stub": stub,
+        "out": str(tmp_path / "loopout"),
+    }
+    manifest = loop.run_loop(config)
+
+    assert manifest["executed"] is True
+    assert manifest["evaluated"] >= 1
+    assert manifest["candidate_mean"] > manifest["base_mean"]
+    assert manifest["decision"] == "promote"
+    assert any("candidate" in model for model in calls)
+    assert any("candidate" not in model for model in calls)
+    promoted = json.loads((tmp_path / "loopout" / "promoted.json").read_text())
+    assert "candidate" in promoted["model_dir"]
+
+
+def test_run_loop_eval_backend_unavailable_propagates_trainer_unavailable(tmp_path, monkeypatch):
+    from episodic import trainers
+    from episodic.trainers import mlx as mlx_trainer
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    origin, sha = _origin_repo(tmp_path)
+    holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
+    for ep_id in holdout_ids + train_ids:
+        store.save_episode(_episode(ep_id, origin, sha))
+
+    def raise_unavailable():
+        raise trainers.TrainerUnavailable("mlx-sft", "install mlx-lm")
+
+    monkeypatch.setattr(mlx_trainer, "_require_mlx", raise_unavailable)
+
+    config = {
+        "trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
+        "min_composite": 0.0, "train_config": {"command": "true"},
+        "base_model": "base-model", "execute": True,
+        "eval_backend": "mlx", "eval_model_dir": "fake/model",
+        "out": str(tmp_path / "loopout"),
+    }
+
+    with pytest.raises(trainers.TrainerUnavailable):
+        loop.run_loop(config)
 
 
 def test_run_loop_sim_prefilter_is_a_noop_when_holdout_is_not_capped(tmp_path, monkeypatch):

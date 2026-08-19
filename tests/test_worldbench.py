@@ -208,6 +208,25 @@ def test_cli_worldbench_backend_resolves_a_real_predictor(tmp_path, monkeypatch,
     assert out["overall"]["composite"] is not None
 
 
+def test_cli_worldbench_backend_threads_adapter_path(tmp_path, monkeypatch, capsys):
+    from episodic.worldmodel import inference as wm_inference
+
+    monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
+    populate_store(4, seed=0)
+    calls = []
+
+    def fake_mlx_predictor(model, **kw):
+        calls.append((model, kw.get("adapter_path")))
+        return lambda sample: "predicted"
+
+    monkeypatch.setattr(wm_inference, "mlx_predictor", fake_mlx_predictor)
+
+    rc = main(["worldbench", "--backend", "mlx", "--model-dir", "fake/model",
+              "--adapter-path", "fake/adapters"])
+    assert rc == 0
+    assert calls == [("fake/model", "fake/adapters")]
+
+
 def test_cli_worldbench_backend_unavailable_prints_hint_and_exits_zero(tmp_path, monkeypatch, capsys):
     from episodic import trainers
     from episodic.worldmodel import inference as wm_inference

@@ -109,6 +109,25 @@ def test_cmd_loop_sim_backend_mlx_resolves_a_real_predictor(monkeypatch, capsys)
     assert config["sim_predictor"]({"history": "x"}) == "predicted"
 
 
+def test_cmd_loop_sim_backend_mlx_threads_sim_adapter_path(monkeypatch, capsys):
+    from episodic.worldmodel import inference as wm_inference
+
+    calls = []
+
+    def fake_mlx_predictor(model, **kw):
+        calls.append((model, kw.get("adapter_path")))
+        return lambda sample: "predicted"
+
+    monkeypatch.setattr(wm_inference, "mlx_predictor", fake_mlx_predictor)
+    config = _run_loop_cli(monkeypatch, [
+        "loop", "--sim-backend", "mlx", "--sim-model-dir", "fake/model",
+        "--sim-adapter-path", "fake/adapters",
+    ])
+    capsys.readouterr()
+    assert calls == [("fake/model", "fake/adapters")]
+    assert config["sim_predictor"]({"history": "x"}) == "predicted"
+
+
 def test_cmd_loop_sim_backend_unavailable_prints_hint_and_exits_zero(monkeypatch, capsys):
     from episodic import trainers
     from episodic.worldmodel import inference as wm_inference
@@ -122,3 +141,29 @@ def test_cmd_loop_sim_backend_unavailable_prints_hint_and_exits_zero(monkeypatch
     rc = cli.main(["loop", "--sim-backend", "mlx", "--sim-model-dir", "fake/model"])
     assert rc == 0
     assert "install mlx-lm" in capsys.readouterr().err
+
+
+def test_cmd_loop_eval_backend_is_unset_by_default(monkeypatch, capsys):
+    config = _run_loop_cli(monkeypatch, ["loop"])
+    capsys.readouterr()
+    assert "eval_backend" not in config
+    assert "eval_model_dir" not in config
+    assert "eval_sampler_path" not in config
+
+
+def test_cmd_loop_wires_eval_backend_flags(monkeypatch, capsys):
+    config = _run_loop_cli(monkeypatch, [
+        "loop", "--eval-backend", "mlx", "--eval-model-dir", "fake/model",
+    ])
+    capsys.readouterr()
+    assert config["eval_backend"] == "mlx"
+    assert config["eval_model_dir"] == "fake/model"
+
+
+def test_cmd_loop_wires_eval_sampler_path(monkeypatch, capsys):
+    config = _run_loop_cli(monkeypatch, [
+        "loop", "--eval-backend", "tinker", "--eval-model-dir", "fake/base", "--eval-sampler-path", "tinker://x",
+    ])
+    capsys.readouterr()
+    assert config["eval_backend"] == "tinker"
+    assert config["eval_sampler_path"] == "tinker://x"

@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import evaluator
-from .. import store, exporters, trainers, replay, paths, worldbench, fidelity
+from .. import store, exporters, trainers, replay, paths, worldbench
 from ..exporters import is_bad, is_trusted
 from ..core import reward, rubric, validity
 from ..serving import difficulty
-from ..worldmodel import env as wm_env
+from ..worldmodel import validate as wm_validate
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -172,16 +172,13 @@ def _sim_max_turns(config):
     return _number(config, "sim_max_turns", None, low=1, integer=True)
 
 
-def _sim_score(episode, predictor, max_turns):
-    result = wm_env.rollout(episode, predictor, max_turns=max_turns)
-    trajectory = fidelity.trajectory_score(result["turns"])
-    return trajectory["mean_composite"]
-
-
 def _sim_rank_holdout(holdout, config):
     predictor = _resolve_sim_predictor(config)
     max_turns = _sim_max_turns(config)
-    scored = [(episode, _sim_score(episode, predictor, max_turns)) for episode in holdout]
+    scored = [
+        (episode, wm_validate.sim_trajectory_score(episode, predictor, max_turns=max_turns))
+        for episode in holdout
+    ]
     scored.sort(key=lambda pair: (pair[1] if pair[1] is not None else 1.0, pair[0]["id"]))
     return [episode for episode, _ in scored]
 
@@ -225,24 +222,44 @@ def _score(result):
     return total if _finite(total) else None
 
 
-def _eval_one(episode, candidate_model, base_model, runner_cmd, start):
+def _eval_reason(candidate, base):
+    for result in (candidate, base):
+        reason = result.get("error") or result.get("note")
+        if reason:
+            return reason
+    return None
+
+
+def _eval_one(episode, candidate_model, base_model, runner_cmd, start, runner=None):
     replay.create_replay(episode, start=start)
     replay_id = replay.replay_id_for(episode)
-    candidate = replay.run_replay(replay_id, candidate_model, start=start, runner_cmd=runner_cmd, execute=True)
-    base = replay.run_replay(replay_id, base_model, start=start, runner_cmd=runner_cmd, execute=True)
+    candidate = replay.run_replay(
+        replay_id, candidate_model, start=start, runner_cmd=runner_cmd, execute=True, runner=runner)
+    base = replay.run_replay(
+        replay_id, base_model, start=start, runner_cmd=runner_cmd, execute=True, runner=runner)
     return {
         "episode_id": episode["id"],
         "candidate": _score(candidate),
         "base": _score(base),
+        "reason": _eval_reason(candidate, base),
     }
 
 
-def _evaluate(holdout, candidate_model, base_model, runner_cmd, concurrency, start):
+def _evaluate(holdout, candidate_model, base_model, runner_cmd, concurrency, start, runner=None):
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         return list(pool.map(
-            lambda episode: _eval_one(episode, candidate_model, base_model, runner_cmd, start),
+            lambda episode: _eval_one(episode, candidate_model, base_model, runner_cmd, start, runner=runner),
             holdout,
         ))
+
+
+def _resolve_eval_runner(config, start):
+    if not config.get("eval_backend"):
+        return None
+    from ..replay import modelrun
+
+    generate = modelrun.resolve_generate(config, start)
+    return modelrun.build_runner(generate)
 
 
 def _now():
@@ -326,7 +343,8 @@ def _run_epoch(config, base_model, out, start, judge, epoch_index, judge_cache=N
     train_manifest = trainers.train(trainer_name, dataset_path, str(out / "candidate"), train_config, cwd=start)
     candidate_model = (train_manifest.get("result") or {}).get("model_dir") or str(out / "candidate")
 
-    scores = _evaluate(holdout_eval, candidate_model, base_model, runner_cmd, concurrency, start)
+    eval_runner = _resolve_eval_runner(config, start)
+    scores = _evaluate(holdout_eval, candidate_model, base_model, runner_cmd, concurrency, start, runner=eval_runner)
     paired = [row for row in scores if _finite(row["candidate"]) and _finite(row["base"])]
     candidate_mean = _mean([row["candidate"] for row in paired])
     base_mean = _mean([row["base"] for row in paired])
