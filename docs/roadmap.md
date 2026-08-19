@@ -86,13 +86,16 @@ against a large real workload yet, so treat the defaults as a first pass.
 
 ## Phase 3 — Learned simulator (WMO step 1)
 
-**Status: done, opt-in.** Exercised by `tests/test_worldmodel_env.py`, `tests/test_worldmodel_inference.py`,
-and the rollout/turing additions to `tests/test_worldbench.py` / `tests/test_fidelity.py`; a required
-`episodic doctor` check exercises the env with the synthetic `prefix` predictor (no mlx/tinker dependency).
+**Status: done, opt-in, and validated against a real trained WM on the real StageWhisper corpus.** Exercised by
+`tests/test_worldmodel_env.py`, `tests/test_worldmodel_inference.py`, `tests/test_worldmodel_validate.py`,
+`tests/test_wm_validate_cli.py`, and the rollout/turing additions to `tests/test_worldbench.py` /
+`tests/test_fidelity.py`; a required `episodic doctor` check exercises the env with the synthetic `prefix`
+predictor (no mlx/tinker dependency).
 
 - `worldmodel/env.py:WorldModelEnv` + `rollout()` give the dataset-shaper a real `reset/step` API, feeding the
   model's own predicted observations back into context (closed loop) instead of always teacher-forcing on
-  ground truth, bounded by the same history-budget truncation `exporters.segment_episode` uses.
+  ground truth, bounded by the same history-budget truncation `exporters.segment_episode` uses (the budget now
+  lives once in `worldmodel/__init__.py:HISTORY_BUDGET`; `env.py` imports it instead of redefining it).
   `worldmodel/inference.py:mlx_predictor` / `tinker_predictor` provide real model inference for it.
 - `episodic loop --sim-prefilter` uses a `WorldModelEnv` rollout + `fidelity.trajectory_score` pass to rank
   which holdout episodes are worth the fixed, expensive real-`replay` budget; the actual promote/keep_base
@@ -100,6 +103,46 @@ and the rollout/turing additions to `tests/test_worldbench.py` / `tests/test_fid
 - `fidelity.trajectory_score` aggregates per-turn `score_observation` into a trajectory-level composite/drift
   figure; `worldbench.rollout_bench` / `rollout_turing_test` are the trajectory-horizon siblings of
   `run_bench` / `turing_test`, reusing the same discriminator unchanged.
+- **Bugfix — unbounded history growth:** `worldmodel/__init__.py:render_history` (and its callers
+  `expand_turns`/`wm_samples`) previously rebuilt an ever-growing, untruncated context string per turn — O(n²)
+  in an episode's step count with no budget, unlike `exporters.segment_episode`/`WorldModelEnv._context`.
+  Reproduced live: exporting the real 104-episode StageWhisper corpus to `wm` format OOM'd (SIGKILL) on the 20
+  episodes with ≥200 steps — the exact bucket holding 15/16 of the corpus's reward≥0.5 "good" episodes. Fixed
+  by giving `render_history` a `history_budget` param (default 4000, matching `HISTORY_BUDGET`) and rewriting it
+  to walk backward from the tail and stop once enough characters are collected, so the cost per call is
+  `O(history_budget)` instead of `O(step_count)` — verified byte-identical to the naive "build full context then
+  slice" reference via randomized differential testing. Exporting all 48 real train episodes (including 15 with
+  200–3943 steps) to `wm` format went from 86s (post-memory-fix, pre-algorithmic-fix) to 1.4s.
+- **CLI wiring for a trained WM:** `MLXSFTTrainer.train()` always emits a LoRA adapter dir, but neither
+  `episodic worldbench --backend mlx` nor `episodic loop --sim-backend mlx` exposed a way to load one —
+  `--adapter-path` / `--sim-adapter-path` close that gap.
+- **`episodic wm-validate` (new):** partitions real episodes via `loop.split_episodes` (per-episode hash
+  holdout — the real corpus is single-source, so `worldmodel.ood_split`/`--source-holdout` would be
+  structurally meaningless here), trains a WM locally via `mlx-sft` (`--execute`, no Tinker, no network billing)
+  or loads an existing adapter (`--adapter-path`), scores the holdout with `worldbench.rollout_bench` /
+  `rollout_turing_test` against `oracle`/`prefix`/`empty`, and optionally (`--replay-correlate`, needs
+  `--execute`) correlates the sim rollout composite against a real, offline replay-eval score via the new
+  `worldmodel/validate.py` (`sim_trajectory_score`/`sim_scores`, `offline_replay_scores` — clones the episode's
+  own local `repo_state.root` instead of dialing `remote_url`, then git-applies the episode's own recorded
+  diff as the "oracle" candidate and runs the captured test command — and stdlib-only `pearson`/`spearman`
+  in `correlate`).
+  - **Real-corpus fidelity run** (48 train / 16 holdout episodes from the real StageWhisper store, `mlx-sft` on
+    `HuggingFaceTB/SmolLM2-135M-Instruct`, 60 LoRA iters over 23,226 turn rows, `max_turns=5`): mean rollout
+    composite — oracle 1.0, trained 0.44, prefix/empty 0.09 (identical); Turing indistinguishability — oracle
+    1.0, trained 0.75, prefix/empty 0.625. Ordering (`oracle > trained > prefix == empty`) holds on both fidelity
+    and indistinguishability, on a real 16-episode holdout that now includes the previously-OOM-ing big
+    episodes.
+  - **Sim↔real correlation (honest negative result):** of the 16 holdout episodes, only 5 have a genuinely
+    captured, correctly-scoped test command with `git_available(root)` true (`exporters._captured_verifier`
+    with the `total is not None` guard) — all 5 are Cargo/Rust builds with no build cache. Real replay-eval score
+    (oracle-diff applied + recorded test command, 120s timeout) was bimodal (0.6 when the build finished and
+    passed, 0.0 when it didn't — i.e. mostly a build-timeout artifact, not a code-quality signal) against a
+    narrow-range sim score (0.37–0.49). Pearson r = **-0.08**, Spearman ρ = **0.29**, n = 5 — statistically
+    meaningless at this sample size, and the "real" axis here is confounded by Cargo compile time far more than
+    by trajectory fidelity. This is reported as a real, currently-weak finding, not a validated lift: the sim
+    rollout score and this real-replay-eval score are answering genuinely different questions (does the WM's
+    predicted trajectory look like the recorded one, vs. does an oracle diff cleanly rebuild in 120s), and n=5
+    real-repo Rust builds is nowhere near enough to draw a general conclusion either way.
 
 ## Positioning (throughout) — done
 
