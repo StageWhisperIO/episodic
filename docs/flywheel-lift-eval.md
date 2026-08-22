@@ -36,14 +36,17 @@ Each task is a real git repository committed in a **buggy (red)** state, with a 
 and a **gold fix** recorded as the episode's unified diff. `build_task` asserts the bug is genuinely red at
 base and green after the fix before it is admitted, so every task is test-necessary by construction. The
 corpus spans bug classes — operator, boundary, data-structure, exception, boolean-logic, string — plus
-singleton out-of-distribution classes that appear only in the held set.
+singleton out-of-distribution classes that appear only in the held set. The prompt the model sees carries
+only a **visible** subset of the assertions; the committed, executed verifier also holds **hidden**
+assertions with different inputs, so a candidate that hardcodes the visible answer still fails.
 
 **The gate.** A candidate diff is scored by cloning the repo at the base commit, `git apply`-ing the
 candidate, **reverting any candidate edits to verifier files**, and running the captured test command.
 Score = `0.6 · tests_pass + 0.4 · diff_overlap`, with a strict pass (skipped ≠ passed, must have >0 passed
 and 0 failed/errored). The verifier-revert step is what makes the gate *trusted*: a candidate cannot pass
-by editing the test, deleting it, or injecting a skip — those SWE-bench-style reward hacks are neutralized
-before scoring.
+by editing the test, deleting it, injecting a skip, or hardcoding the visible answer — those SWE-bench-style
+reward hacks are neutralized before scoring (the last one by hidden held-out assertions the candidate never
+sees).
 
 **The flywheel.** Episodes split stratified by bug class into train / held. The training set becomes SFT
 rows (`intent + diff-instruction` → fenced gold diff). A base sampler (untrained) and a trained sampler
@@ -84,6 +87,10 @@ targeted improvement rather than a decoding-luck artifact.
   (`test_gate_discriminates_on_every_task`).
 - The gate resists verifier tampering: a candidate that rewrites the test to `assert True` still scores
   not-solved, because the edit is reverted before scoring (`test_gate_reverts_verifier_tampering`).
+- The gate resists hardcoded-constant stubs: the model sees only the visible assertion, while the executed
+  verifier also runs hidden assertions with different inputs. A stub that returns the visible answer passes
+  the visible check but fails the hidden one, and the hidden assertions never appear in the prompt
+  (`test_gate_rejects_hardcoded_visible_constant`, `test_hidden_assertions_are_not_leaked_to_the_prompt`).
 - The flywheel harness measures lift correctly: with a base that solves 0 and a trained oracle that solves
   all, measured lift equals the held count (`test_stub_flywheel_measures_full_lift`).
 - On a real trained model (Tinker, 4B), the loop produces a positive lift with no regressions — §3.
@@ -98,10 +105,6 @@ targeted improvement rather than a decoding-luck artifact.
   larger job-tmp corpus of the same construction. `episodic eval-flywheel --backend tinker --variants K`
   reproduces a larger corpus and the real measurement on demand; the exact 82-task run is not baked into the
   repo.
-- **One reward-hack residual.** The verifier-revert closes gut-the-test, assert-true, skip-injection, and
-  diff-then-break. It does **not** close a candidate that hardcodes the answer against a *visible* test
-  (a stub returning the expected constant). Closing that requires hidden or randomized held-out assertions,
-  which this corpus does not yet carry.
 - **Serving side of the loop is not exercised here.** This report measures traces→train→gate. The
   train→serve→endpoint half (`episodic serve`) is separate and out of scope for this measurement.
 

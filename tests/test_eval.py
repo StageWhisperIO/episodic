@@ -47,3 +47,20 @@ def test_gate_reverts_verifier_tampering(corpus):
         return "tampered", 0
 
     assert flywheel.solved(corpus[0], tamper_runner) is False
+
+
+def test_hidden_assertions_are_not_leaked_to_the_prompt(corpus):
+    target = next(ep for ep in corpus if "solve(2, 3) == 5" in ep["intent"])
+    committed = (pathlib.Path(target["repo_state"]["root"]) / "test_solution.py").read_text()
+    assert "solve(3, 5) == 8" in committed
+    assert "solve(3, 5) == 8" not in target["intent"]
+
+
+def test_gate_rejects_hardcoded_visible_constant(corpus):
+    target = next(ep for ep in corpus if "solve(2, 3) == 5" in ep["intent"])
+
+    def stub_runner(model, workspace, prompt_text):
+        (pathlib.Path(workspace) / "solution.py").write_text("def solve(a, b):\n    return 5\n")
+        return "stub", 0
+
+    assert flywheel.solved(target, stub_runner) is False
