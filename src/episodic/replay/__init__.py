@@ -23,6 +23,40 @@ def replay_id_for(episode):
     return "rp_" + (safe or "unknown") + "_" + digest
 
 
+_VERIFIER_PATTERNS = (
+    re.compile(r"(^|/)test_[^/]*\.py$"),
+    re.compile(r"(^|/)[^/]*_test\.py$"),
+    re.compile(r"(^|/)conftest\.py$"),
+    re.compile(r"(^|/)[^/]*\.(test|spec)\.[jt]sx?$"),
+    re.compile(r"(^|/)[^/]*_test\.go$"),
+    re.compile(r"(^|/)[^/]*_spec\.rb$"),
+    re.compile(r"(^|/)(tests?|spec|specs|__tests__)/"),
+)
+
+
+def _is_verifier_file(path):
+    return any(pattern.search(path) for pattern in _VERIFIER_PATTERNS)
+
+
+def _protect_verifier(workspace):
+    diff_out, _ = _run_cmd(["git", "-C", str(workspace), "diff", "--name-only"], timeout=30)
+    reverted = [p for p in diff_out.splitlines() if p.strip() and _is_verifier_file(p)]
+    for path in reverted:
+        _run_cmd(["git", "-C", str(workspace), "checkout", "HEAD", "--", path], timeout=30)
+    untracked, _ = _run_cmd(
+        ["git", "-C", str(workspace), "ls-files", "--others", "--exclude-standard"], timeout=30)
+    for path in untracked.splitlines():
+        if path.strip() and _is_verifier_file(path):
+            target = (Path(workspace) / path).resolve()
+            try:
+                if os.path.commonpath([str(target), str(Path(workspace).resolve())]) == str(Path(workspace).resolve()):
+                    target.unlink()
+                    reverted.append(path)
+            except (OSError, ValueError):
+                pass
+    return reverted
+
+
 def cleanup_replay(replay_id, start=None):
     replays_root = paths.replays_dir(start).resolve()
     replay_dir = (replays_root / replay_id).resolve()
@@ -350,7 +384,12 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
     else:
         dry_run = True
 
+    verifier_reverted = []
+    if workspace_created and ran:
+        verifier_reverted = _protect_verifier(workspace)
+
     tests_result = None
+    test_rc = None
     produced_files = []
     diff_overlap = 0.0
 
@@ -358,10 +397,17 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
         try:
             test_cwd_dir = str(workspace / test_cwd) if test_cwd else str(workspace)
             out, rc = _run_cmd(test_command, cwd=test_cwd_dir, timeout=120, shell=True)
+            test_rc = rc
             ts = now_iso()
             tests_result = testdetect.detect_test_run(test_command, out, ts, exit_code=rc)
         except Exception:
             pass
+
+    if tests_result is not None:
+        passed = tests_result.get("passed", 0)
+        failed = tests_result.get("failed", 0)
+        errors = tests_result.get("errors", 0)
+        tests_result["ok"] = bool(test_rc == 0 and passed > 0 and failed == 0 and errors == 0)
 
     if workspace_created:
         try:
@@ -417,6 +463,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
         "test_cwd": test_cwd,
         "tests": tests_result,
         "produced_files": produced_files,
+        "verifier_reverted": verifier_reverted,
         "scores": scores,
         "note": note,
     }

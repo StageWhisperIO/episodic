@@ -653,28 +653,42 @@ def test_eval_one_with_stub_runner_produces_distinct_paired_scores(tmp_path, mon
     assert row["candidate"] > row["base"]
 
 
-def _breaking_diff():
+def _source_dep_origin(tmp_path):
+    origin = tmp_path / "origin_src"
+    origin.mkdir()
+    (origin / "f.py").write_text("def val():\n    return 1\n")
+    (origin / "test_f.py").write_text("from f import val\n\n\ndef test_ok():\n    assert val() == 1\n")
+    _git(str(origin), "init", "-q")
+    _git(str(origin), "config", "user.email", "t@t.dev")
+    _git(str(origin), "config", "user.name", "t")
+    _git(str(origin), "add", "-A")
+    _git(str(origin), "commit", "-q", "-m", "base")
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(origin),
+                         capture_output=True, text=True).stdout.strip()
+    return str(origin), sha
+
+
+def _source_breaking_diff():
     return (
-        "diff --git a/test_f.py b/test_f.py\n"
-        "index 0000000..0000000 100644\n"
-        "--- a/test_f.py\n"
-        "+++ b/test_f.py\n"
+        "diff --git a/f.py b/f.py\n"
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
         "@@ -1,2 +1,2 @@\n"
-        " def test_ok():\n"
-        "-    assert True\n"
-        "+    assert False\n"
+        " def val():\n"
+        "-    return 1\n"
+        "+    return 2\n"
     )
 
 
 def test_run_loop_eval_backend_stub_keeps_base_when_the_candidate_diff_regresses(tmp_path, monkeypatch):
     monkeypatch.setenv("EPISODIC_HOME", str(tmp_path / ".episodic"))
-    origin, sha = _origin_repo(tmp_path)
+    origin, sha = _source_dep_origin(tmp_path)
     holdout_ids, train_ids = _split_ids(seed=0, frac=0.5)
     for ep_id in holdout_ids + train_ids:
         store.save_episode(_episode(ep_id, origin, sha))
 
     def stub(model, messages):
-        return _breaking_diff() if "candidate" in model else ""
+        return _source_breaking_diff() if "candidate" in model else ""
 
     config = {
         "trainer": "command", "format": "sft", "holdout_frac": 0.5, "seed": 0,
