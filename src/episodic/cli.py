@@ -741,6 +741,47 @@ def _set_tier(config, tier, backend, base_url, model):
             tier_config["model"] = model
 
 
+def cmd_eval(args):
+    from .eval import flywheel, gate, redgreen
+
+    repos = args.repos or str(paths.home() / "eval_repos")
+    if args.generate:
+        episodes = redgreen.generate_corpus(repos, variants=args.variants)
+    else:
+        episodes = [ep for ep in store.load_episodes() if "swe" in (ep.get("labels") or [])]
+        if not episodes:
+            episodes = redgreen.generate_corpus(repos, variants=args.variants)
+
+    report = {"corpus": len(episodes)}
+    gate_rep = gate.gate_report(episodes)
+    report["gate"] = {"total": gate_rep["total"], "clean": gate_rep["clean"],
+                      "all_clean": gate_rep["all_clean"]}
+    if not args.json:
+        print(f"gate: {gate_rep['clean']}/{gate_rep['total']} tasks clean "
+              f"(oracle green, empty+broken red)")
+
+    if not args.gate_only:
+        train, held = flywheel.stratified_split(episodes, per_class_held=args.per_class_held)
+        if args.backend == "stub":
+            lift = flywheel.oracle_vs_empty_lift(held)
+        else:
+            sft = str(paths.home() / "eval_sft.jsonl")
+            out = str(paths.home() / "eval_candidate")
+            lift = flywheel.real_lift(train, held, backend=args.backend, model=args.model,
+                                      sft_path=sft, out_dir=out, epochs=args.epochs, iters=args.iters,
+                                      lora_rank=args.lora_rank, max_tokens=args.max_tokens)
+        report["lift"] = lift
+        if not args.json:
+            print(f"lift [{args.backend}]: base {lift['base_solved']}/{lift['held']} -> "
+                  f"trained {lift['trained_solved']}/{lift['held']} (+{lift['lift']})")
+            for cls, stats in sorted(lift["by_class"].items()):
+                print(f"  [{cls}] base={stats['base']}/{stats['held']} trained={stats['trained']}/{stats['held']}")
+
+    if args.json:
+        _print_json(report)
+    return 0 if gate_rep["all_clean"] else 1
+
+
 def cmd_serve(args):
     from .serving.server import serve
 
@@ -975,6 +1016,33 @@ def build_parser():
                                   "test verifier; the replay score for verifier-less episodes is diff-overlap "
                                   "only, so the correlation conflates two different targets (default: off)")
     wm_validate.set_defaults(func=cmd_wm_validate)
+
+    eval_cmd = sub.add_parser(
+        "eval-flywheel",
+        help="generate red->green tasks, verify the replay-eval gate discriminates, and measure "
+             "base-vs-trained flywheel lift through it (stub oracle-vs-empty by default; mlx/tinker "
+             "for a real trained model)")
+    eval_cmd.add_argument("--generate", action="store_true",
+                          help="(re)build the red->green task corpus into the store before evaluating")
+    eval_cmd.add_argument("--variants", type=int, default=1,
+                          help="distinct instances per bug-class template (default: 1 => 12 tasks)")
+    eval_cmd.add_argument("--repos", help="directory for the generated task repos (default: <home>/eval_repos)")
+    eval_cmd.add_argument("--gate-only", dest="gate_only", action="store_true",
+                          help="only verify gate discrimination; skip the flywheel lift measurement")
+    eval_cmd.add_argument("--backend", choices=["stub", "mlx", "tinker"], default="stub",
+                          help="lift backend: stub (oracle-vs-empty, deterministic, no model) or a real "
+                               "base-vs-trained run on mlx/tinker (default: stub)")
+    eval_cmd.add_argument("--model", help="mlx base model id or tinker base model id (--backend mlx/tinker)")
+    eval_cmd.add_argument("--per-class-held", dest="per_class_held", type=int, default=1,
+                          help="held-out tasks per bug class (default: 1)")
+    eval_cmd.add_argument("--epochs", type=int, default=3, help="tinker-sft epochs (--backend tinker)")
+    eval_cmd.add_argument("--iters", type=int, default=400, help="mlx-sft iters (--backend mlx)")
+    eval_cmd.add_argument("--lora-rank", dest="lora_rank", type=int, default=32,
+                          help="tinker LoRA rank (--backend tinker)")
+    eval_cmd.add_argument("--max-tokens", dest="max_tokens", type=int, default=768,
+                          help="generation budget per task for the trained/base model")
+    eval_cmd.add_argument("--json", action="store_true")
+    eval_cmd.set_defaults(func=cmd_eval)
 
     doctor = sub.add_parser("doctor", help="run end-to-end self-checks on the install")
     doctor.add_argument("--json", action="store_true")
