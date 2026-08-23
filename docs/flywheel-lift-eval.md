@@ -152,7 +152,41 @@ the same shape the synthetic corpus fakes, now from real code. This is the corpu
 lift over them. `--certify` is the gate that measures the trusted-task count; the miner is what moves it
 from 0 to 59.
 
-## 6. Reproduce it
+## 6. Lift on real mined tasks: three levers
+
+The synthetic +4 is on easy single-function tasks. The 59 mined Episodic tasks are real, multi-file, and
+much harder. Three follow-up experiments, all on `Qwen/Qwen3.5-4B` via Tinker, scored through the gate on
+real clones:
+
+| run | corpus / split | held | base | trained | lift |
+|-----|----------------|------|------|---------|------|
+| single-shot SFT, id-split | 27 tractable mined, held = every 4th | 7 | 0 | 0 | 0 |
+| single-shot SFT, hold-out-small | 27 tractable, held = 8 smallest | 8 | 1 | 2 | **+1** |
+| agentic 2-turn SFT, hold-out-small | same split | 8 | 1 | 1 | 0 |
+
+Findings, stated honestly:
+
+- **Difficulty and split dominate.** With an id-ordered split the held set was all hard multi-file
+  internals (`loop`, `replay`, `store`) — base and trained both solve **0/7**. Holding out the *smallest*
+  tasks instead, the base already solves the one trivial one (`examples/clamp.py`) and a trained model
+  reaches **2/8** — a **+1** that is real but marginal.
+- **±1 at held=8 is inside training noise.** The +1 came from one task (`core/testdetect.py`); a second
+  training run (the agentic row) did not reproduce it and landed at 0. The signal is not yet separable from
+  run-to-run variance at this corpus size.
+- **Agentic feedback did not help these tasks.** A 2-turn generate→apply→test→retry loop solved no more
+  than single-shot. The unsolved tractable tasks are real multi-file internal changes (`ids`+`paths`,
+  `service`, `rewards`, `normalize`); a plain test-failure message is not enough signal for a 4B model to
+  locate the fix. Agentic pays off when the model is close (a syntax slip it can read off the error), not
+  when the change is out of reach.
+
+**Honest read.** The infrastructure — mine → certify → gate → train (SFT / agentic / STaR) → score — runs
+end-to-end on real tasks, and on the easy real subset it produces a small positive lift. But meaningful,
+noise-separable lift on *hard* real repo-internal tasks is not there at 4B with single-model SFT or 2-turn
+agentic. The levers that remain are a bigger model (now justified, since real tasks leave headroom), more
+mined tasks from more repos (to shrink the noise band), and a real multi-step agent (tool use, not a single
+diff) — which is what actually closes multi-file bugs.
+
+## 7. Reproduce it
 
 ```bash
 # Deterministic, no model — the CI gate (gate discrimination + lift plumbing):
@@ -167,6 +201,9 @@ episodic eval-flywheel --certify --json
 
 # Harvest certified red->green tasks from a test-rich repo's git history into the store:
 episodic mine-history /path/to/python-repo --max-commits 120
+
+# Score with a multi-turn agentic runner (generate -> apply -> run test -> feed failure back -> retry):
+episodic eval-flywheel --backend tinker --model Qwen/Qwen3.5-4B --agentic-turns 2
 ```
 
 `src/episodic/eval/redgreen.py` builds the tasks, `gate.py` is the trusted discriminator, `flywheel.py`
