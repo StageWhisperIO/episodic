@@ -108,7 +108,34 @@ targeted improvement rather than a decoding-luck artifact.
 - **Serving side of the loop is not exercised here.** This report measures traces→train→gate. The
   train→serve→endpoint half (`episodic serve`) is separate and out of scope for this measurement.
 
-## 5. Reproduce it
+## 5. The real corpus today: the trusted-task funnel
+
+Measured on the 104 captured StageWhisper episodes (read-only, via `EPISODIC_HOME`), the funnel is:
+
+```
+104  captured
+102  clonable (local git repo present — no network, no auth)
+102  + base_commit
+ 20  + captured a test command / verifier      (82 sessions ran no capturable test)
+  5  + also has a usable diff                   (15 have no diff)
+  0  certifiably test-necessary                 (fails red without the diff, passes green with it)
+```
+
+`episodic eval-flywheel --certify` runs the last step: clone at base, run the captured test **without** the
+diff (must fail red) and **with** it (must pass green). **Zero of 104** pass — 28 because the captured diff
+does not make the test pass in the clone (the diff and the test are from different scopes, or a heavy
+Rust/TS build does not come up), 3 because the test passes with *or* without the diff (a broad suite that
+does not depend on the change). Clone/env is **not** the bottleneck; the captured `(diff, test)` pairs are
+simply not matched red→green units.
+
+This is the honest ceiling on "provable lift on real work" today: the trusted gate has **nothing real to
+grade** from this corpus. The synthetic corpus exists precisely because of this gap. Closing it needs
+change-scoped capture (bind a test's red→green transition to the minimal diff that caused it) and, more
+fundamentally, episodes from test-rich repos where one change maps to one covering test — not a Tauri
+desktop/mobile monorepo whose tests are whole-workspace cargo builds. `--certify` is the gate that will
+measure that number climbing above zero.
+
+## 6. Reproduce it
 
 ```bash
 # Deterministic, no model — the CI gate (gate discrimination + lift plumbing):
@@ -117,6 +144,9 @@ python -m pytest tests/test_eval.py -q
 
 # Real base-vs-trained magnitude on Tinker (needs TINKER_API_KEY; deletes its checkpoints after):
 episodic eval-flywheel --generate --variants 6 --backend tinker --model Qwen/Qwen3.5-4B
+
+# Certify how many captured episodes in the current store are trusted, test-necessary tasks:
+episodic eval-flywheel --certify --json
 ```
 
 `src/episodic/eval/redgreen.py` builds the tasks, `gate.py` is the trusted discriminator, `flywheel.py`

@@ -744,6 +744,18 @@ def _set_tier(config, tier, backend, base_url, model):
 def cmd_eval(args):
     from .eval import flywheel, gate, redgreen
 
+    if args.certify:
+        eps = [ep for ep in store.load_episodes()
+               if any((d.get("unified") or "").strip() for d in ep.get("diffs", []))]
+        cert = gate.certify_corpus(eps)
+        if args.json:
+            _print_json(cert)
+        else:
+            print(f"certified (test-necessary): {cert['certified']}/{cert['total']} episodes with a diff")
+            for episode_id in cert["certified_ids"]:
+                print(f"  {episode_id}")
+        return 0 if cert["certified"] else 1
+
     repos = args.repos or str(paths.home() / "eval_repos")
     if args.generate:
         episodes = redgreen.generate_corpus(repos, variants=args.variants)
@@ -1029,6 +1041,10 @@ def build_parser():
     eval_cmd.add_argument("--repos", help="directory for the generated task repos (default: <home>/eval_repos)")
     eval_cmd.add_argument("--gate-only", dest="gate_only", action="store_true",
                           help="only verify gate discrimination; skip the flywheel lift measurement")
+    eval_cmd.add_argument("--certify", action="store_true",
+                          help="instead of the synthetic corpus, certify the current store's captured "
+                               "episodes: clone at base and keep only those whose captured test is "
+                               "test-necessary (fails red without the diff, passes green with it)")
     eval_cmd.add_argument("--backend", choices=["stub", "mlx", "tinker"], default="stub",
                           help="lift backend: stub (oracle-vs-empty, deterministic, no model) or a real "
                                "base-vs-trained run on mlx/tinker (default: stub)")

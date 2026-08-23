@@ -48,3 +48,30 @@ def gate_report(episodes):
     rows = [{"id": ep["id"], **verify_gate(ep)} for ep in episodes]
     clean = sum(1 for row in rows if row["clean"])
     return {"total": len(rows), "clean": clean, "all_clean": clean == len(rows), "rows": rows}
+
+
+def certify_episode(episode):
+    diff = _unified_diff(episode)
+    if not diff.strip():
+        return {"green_ok": False, "red_ok": None, "test_necessary": False, "reason": "no diff"}
+    green = score_episode(episode, _oracle_diff_runner(diff))
+    if not green["ok"]:
+        return {"green_ok": False, "red_ok": None, "test_necessary": False, "reason": "diff does not pass"}
+    red = score_episode(episode, empty_runner)
+    necessary = bool(green["ok"] and not red["ok"])
+    reason = "certified" if necessary else "test not necessary (passes without the diff)"
+    return {"green_ok": green["ok"], "red_ok": red["ok"], "test_necessary": necessary, "reason": reason}
+
+
+def certify_corpus(episodes):
+    rows = []
+    for episode in episodes:
+        try:
+            result = certify_episode(episode)
+        except Exception as exc:
+            result = {"green_ok": False, "red_ok": None, "test_necessary": False,
+                      "reason": f"{type(exc).__name__}: {exc}"}
+        rows.append({"id": episode["id"], **result})
+    certified = [row for row in rows if row["test_necessary"]]
+    return {"total": len(rows), "certified": len(certified),
+            "certified_ids": [row["id"] for row in certified], "rows": rows}

@@ -64,3 +64,18 @@ def test_gate_rejects_hardcoded_visible_constant(corpus):
         return "stub", 0
 
     assert flywheel.solved(target, stub_runner) is False
+
+
+def test_certify_accepts_test_necessary_tasks(corpus):
+    report = gate.certify_corpus(corpus)
+    assert report["certified"] == len(corpus), [row for row in report["rows"] if not row["test_necessary"]]
+
+
+def test_certify_rejects_episode_without_a_diff():
+    from episodic.schema import new_episode
+
+    episode = new_episode(id="ep_no_diff", intent="nothing to grade")
+    episode["diffs"] = []
+    result = gate.certify_episode(episode)
+    assert result["test_necessary"] is False
+    assert result["reason"] == "no diff"
