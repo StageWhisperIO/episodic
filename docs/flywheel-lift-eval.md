@@ -163,6 +163,7 @@ real clones:
 | single-shot SFT, id-split | 27 tractable mined, held = every 4th | 7 | 0 | 0 | 0 |
 | single-shot SFT, hold-out-small | 27 tractable, held = 8 smallest | 8 | 1 | 2 | **+1** |
 | agentic 2-turn SFT, hold-out-small | same split | 8 | 1 | 1 | 0 |
+| STaR / RL-on-gate, hold-out-small | same split | 8 | 1 | 1 | 0 |
 
 Findings, stated honestly:
 
@@ -178,13 +179,20 @@ Findings, stated honestly:
   `service`, `rewards`, `normalize`); a plain test-failure message is not enough signal for a 4B model to
   locate the fix. Agentic pays off when the model is close (a syntax slip it can read off the error), not
   when the change is out of reach.
+- **RL-on-gate is starved by a weak base.** STaR sampled 3 rollouts per train task and kept only
+  gate-passers: the base solved just **2 of 19** train tasks, so the expert-iteration SFT trained on 2 of
+  the model's own diffs — far too little to move the held score (1/8 → 1/8). RL/STaR amplifies a policy
+  that already succeeds sometimes; here the base almost never does, so there is nothing to bootstrap.
 
 **Honest read.** The infrastructure — mine → certify → gate → train (SFT / agentic / STaR) → score — runs
 end-to-end on real tasks, and on the easy real subset it produces a small positive lift. But meaningful,
-noise-separable lift on *hard* real repo-internal tasks is not there at 4B with single-model SFT or 2-turn
-agentic. The levers that remain are a bigger model (now justified, since real tasks leave headroom), more
-mined tasks from more repos (to shrink the noise band), and a real multi-step agent (tool use, not a single
-diff) — which is what actually closes multi-file bugs.
+noise-separable lift on *hard* real repo-internal tasks is not there at 4B with single-shot SFT, 2-turn
+agentic, or RL-on-gate. All three converge on the same bottleneck: **a 4B base solves ~1/8 held and ~2/19
+train, so there is almost no signal for any method to amplify.** The wall is base capability, not the
+pipeline. The levers that remain are a bigger model (now justified — real tasks leave headroom and the base
+is the limiting factor), more mined tasks from more repos (to shrink the noise band and give RL enough
+successes to bootstrap), and a real multi-step tool-using agent (not a single diff) — which is what actually
+closes multi-file bugs.
 
 ## 7. Reproduce it
 
