@@ -781,7 +781,8 @@ def cmd_eval(args):
             out = str(paths.home() / "eval_candidate")
             lift = flywheel.real_lift(train, held, backend=args.backend, model=args.model,
                                       sft_path=sft, out_dir=out, epochs=args.epochs, iters=args.iters,
-                                      lora_rank=args.lora_rank, max_tokens=args.max_tokens)
+                                      lora_rank=args.lora_rank, max_tokens=args.max_tokens,
+                                      agentic_turns=args.agentic_turns)
         report["lift"] = lift
         if not args.json:
             print(f"lift [{args.backend}]: base {lift['base_solved']}/{lift['held']} -> "
@@ -1072,6 +1073,10 @@ def build_parser():
                           help="tinker LoRA rank (--backend tinker)")
     eval_cmd.add_argument("--max-tokens", dest="max_tokens", type=int, default=768,
                           help="generation budget per task for the trained/base model")
+    eval_cmd.add_argument("--agentic-turns", dest="agentic_turns", type=int, default=0,
+                          help="score with a multi-turn agentic runner (generate -> apply -> run test -> "
+                               "feed the failure back -> retry) up to this many turns instead of a single "
+                               "shot (default: 0, single shot)")
     eval_cmd.add_argument("--json", action="store_true")
     eval_cmd.set_defaults(func=cmd_eval)
 

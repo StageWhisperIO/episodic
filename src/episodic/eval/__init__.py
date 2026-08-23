@@ -1,3 +1,3 @@
-from . import flywheel, gate, mine, redgreen
+from . import agentic, flywheel, gate, mine, redgreen
 
-__all__ = ["redgreen", "gate", "flywheel", "mine"]
+__all__ = ["redgreen", "gate", "flywheel", "mine", "agentic"]

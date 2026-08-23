@@ -67,6 +67,46 @@ def oracle_vs_empty_lift(held):
                         lambda episode: _oracle_diff_runner(_unified_diff(episode)))
 
 
+def agentic_runner_for(episode, generate, max_turns):
+    from . import agentic
+
+    root = (episode.get("repo_state") or {}).get("root")
+    test_command, test_cwd = replay._resolve_test_command(episode, root)
+    return agentic.build_agentic_runner(generate, test_command, max_turns=max_turns, test_cwd=test_cwd)
+
+
+def _completion_solves(episode, text):
+    diff = modelrun.extract_diff(text)
+
+    def runner(model, workspace, prompt_text):
+        applied, log = modelrun.apply_diff(diff, workspace)
+        return log, 0 if applied else 1
+
+    return solved(episode, runner)
+
+
+def rollout_and_filter(episodes, generate, k=4):
+    rows = []
+    solved_count = 0
+    for episode in episodes:
+        prompt = episode["intent"] + modelrun._DIFF_INSTRUCTION
+        for _ in range(k):
+            text = generate("policy", [{"role": "user", "content": prompt}])
+            if _completion_solves(episode, text):
+                rows.append({"messages": [{"role": "user", "content": prompt},
+                                          {"role": "assistant", "content": text}]})
+                solved_count += 1
+                break
+    return {"rows": rows, "solved": solved_count, "attempted": len(episodes)}
+
+
+def write_rollout_sft(rollout_rows, path):
+    with open(path, "w") as fh:
+        for row in rollout_rows:
+            fh.write(json.dumps(row) + "\n")
+    return path
+
+
 def _tinker_runners(model, result, max_tokens):
     import tinker
 
@@ -116,7 +156,7 @@ def _mlx_runners(model, result, max_tokens):
 
 
 def real_lift(train, held, *, backend, model, sft_path, out_dir, epochs=3, iters=400,
-              lora_rank=32, batch_size=4, learning_rate=1e-4, max_tokens=768):
+              lora_rank=32, batch_size=4, learning_rate=1e-4, max_tokens=768, agentic_turns=0):
     build_sft(train, sft_path)
     if backend == "tinker":
         trainer_name = "tinker-sft"
@@ -134,12 +174,19 @@ def real_lift(train, held, *, backend, model, sft_path, out_dir, epochs=3, iters
     else:
         base_gen, trained_gen, cleanup = _mlx_runners(model, result, max_tokens)
 
-    base_runner = modelrun.build_runner(base_gen)
-    trained_runner = modelrun.build_runner(trained_gen)
+    if agentic_turns:
+        base_for = lambda episode: agentic_runner_for(episode, base_gen, agentic_turns)
+        trained_for = lambda episode: agentic_runner_for(episode, trained_gen, agentic_turns)
+    else:
+        base_runner = modelrun.build_runner(base_gen)
+        trained_runner = modelrun.build_runner(trained_gen)
+        base_for = lambda episode: base_runner
+        trained_for = lambda episode: trained_runner
     try:
-        report = measure_lift(held, lambda episode: base_runner, lambda episode: trained_runner)
+        report = measure_lift(held, base_for, trained_for)
     finally:
         cleanup()
     report.update({"backend": backend, "model": model, "train": len(train),
-                   "steps": result.get("steps"), "final_loss": result.get("final_loss")})
+                   "steps": result.get("steps"), "final_loss": result.get("final_loss"),
+                   "agentic_turns": agentic_turns})
     return report

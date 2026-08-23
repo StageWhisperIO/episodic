@@ -2,7 +2,9 @@ import pathlib
 
 import pytest
 
-from episodic.eval import flywheel, gate, redgreen
+from episodic import replay
+from episodic.eval import agentic, flywheel, gate, redgreen
+from episodic.worldmodel import validate as wm
 
 
 @pytest.fixture(scope="module")
@@ -79,3 +81,36 @@ def test_certify_rejects_episode_without_a_diff():
     result = gate.certify_episode(episode)
     assert result["test_necessary"] is False
     assert result["reason"] == "no diff"
+
+
+def test_agentic_runner_solves_after_test_feedback(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    calls = {"n": 0}
+
+    def generate(model, messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "```diff\nnonsense that will not apply\n```"
+        return "```diff\n" + gold + "```"
+
+    test_command, test_cwd = replay._resolve_test_command(episode, episode["repo_state"]["root"])
+    runner = agentic.build_agentic_runner(generate, test_command, max_turns=3, test_cwd=test_cwd)
+    assert flywheel.solved(episode, runner) is True
+    assert calls["n"] >= 2
+
+
+def test_rollout_and_filter_keeps_only_gate_passing(corpus):
+    solvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    unsolvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "str")
+    gold = wm._unified_diff(solvable)
+
+    def generate(model, messages):
+        if solvable["intent"] in messages[0]["content"]:
+            return "```diff\n" + gold + "```"
+        return "```diff\ngarbage that will not apply\n```"
+
+    result = flywheel.rollout_and_filter([solvable, unsolvable], generate, k=1)
+    assert result["solved"] == 1
+    assert len(result["rows"]) == 1
+    assert gold in result["rows"][0]["messages"][1]["content"]
