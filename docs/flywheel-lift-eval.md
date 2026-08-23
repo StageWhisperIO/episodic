@@ -128,12 +128,29 @@ Rust/TS build does not come up), 3 because the test passes with *or* without the
 does not depend on the change). Clone/env is **not** the bottleneck; the captured `(diff, test)` pairs are
 simply not matched red→green units.
 
-This is the honest ceiling on "provable lift on real work" today: the trusted gate has **nothing real to
-grade** from this corpus. The synthetic corpus exists precisely because of this gap. Closing it needs
-change-scoped capture (bind a test's red→green transition to the minimal diff that caused it) and, more
-fundamentally, episodes from test-rich repos where one change maps to one covering test — not a Tauri
-desktop/mobile monorepo whose tests are whole-workspace cargo builds. `--certify` is the gate that will
-measure that number climbing above zero.
+This is the honest ceiling on "provable lift on real work" from *this* corpus: the trusted gate has
+**nothing real to grade** from a Tauri desktop/mobile monorepo whose tests are whole-workspace cargo
+builds. Closing it needs change-scoped, certified units from test-rich repos.
+
+**Resolution — `episodic mine-history`.** The miner harvests exactly those units from a repo's git
+history: for each commit that changes both a test and source, it injects the test at the parent commit
+(which must fail **red** without the change) and applies the source change (which must pass **green**),
+keeping only test-necessary units. It is change-scoped capture sourced from history, and every unit is
+certified by construction.
+
+Run against Episodic's own history (a test-rich Python repo), 120 commits scanned:
+
+```
+StageWhisper monorepo   →   0 certified tasks
+Episodic (mine-history) →  59 certified red→green tasks   (249s, 54 MB of hardlinked clones)
+```
+
+Each mined task is a real, multi-file, change-scoped unit (across `loop`, `replay`, `exporters`,
+`core/episode`, `examples/`, …) with a covering test that fails without the change and passes with it —
+the same shape the synthetic corpus fakes, now from real code. This is the corpus the flywheel needs:
+`episodic eval-flywheel` (no `--generate`) picks up the mined `swe`-labelled episodes and runs the gate +
+lift over them. `--certify` is the gate that measures the trusted-task count; the miner is what moves it
+from 0 to 59.
 
 ## 6. Reproduce it
 
@@ -147,6 +164,9 @@ episodic eval-flywheel --generate --variants 6 --backend tinker --model Qwen/Qwe
 
 # Certify how many captured episodes in the current store are trusted, test-necessary tasks:
 episodic eval-flywheel --certify --json
+
+# Harvest certified red->green tasks from a test-rich repo's git history into the store:
+episodic mine-history /path/to/python-repo --max-commits 120
 ```
 
 `src/episodic/eval/redgreen.py` builds the tasks, `gate.py` is the trusted discriminator, `flywheel.py`

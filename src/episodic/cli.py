@@ -794,6 +794,21 @@ def cmd_eval(args):
     return 0 if gate_rep["all_clean"] else 1
 
 
+def cmd_mine(args):
+    from .eval import mine
+
+    out = args.out or str(paths.home() / "mined_repos")
+    episodes = mine.mine_repo(args.repo, out, max_commits=args.max_commits, limit=args.limit,
+                              save=not args.no_save)
+    if args.json:
+        _print_json({"repo": args.repo, "mined": len(episodes), "ids": [ep["id"] for ep in episodes]})
+    else:
+        print(f"mined {len(episodes)} certified red->green tasks from {args.repo}")
+        for ep in episodes:
+            print(f"  {ep['id']}  {[d['file'] for d in ep['diffs']][:3]}")
+    return 0 if episodes else 1
+
+
 def cmd_serve(args):
     from .serving.server import serve
 
@@ -1059,6 +1074,21 @@ def build_parser():
                           help="generation budget per task for the trained/base model")
     eval_cmd.add_argument("--json", action="store_true")
     eval_cmd.set_defaults(func=cmd_eval)
+
+    mine_cmd = sub.add_parser(
+        "mine-history",
+        help="mine a repo's git history into certified red->green tasks: for each commit that changes "
+             "both a test and source, inject the test at the parent (must fail red) and apply the source "
+             "change (must pass green), keeping only test-necessary units")
+    mine_cmd.add_argument("repo", help="path to a local git repo to mine")
+    mine_cmd.add_argument("--out", help="dir for the scratch task clones (default: <home>/mined_repos)")
+    mine_cmd.add_argument("--max-commits", dest="max_commits", type=int, default=200,
+                          help="how many recent commits to scan (default: 200)")
+    mine_cmd.add_argument("--limit", type=int, help="stop after this many certified tasks")
+    mine_cmd.add_argument("--no-save", dest="no_save", action="store_true",
+                          help="do not persist mined episodes to the store")
+    mine_cmd.add_argument("--json", action="store_true")
+    mine_cmd.set_defaults(func=cmd_mine)
 
     doctor = sub.add_parser("doctor", help="run end-to-end self-checks on the install")
     doctor.add_argument("--json", action="store_true")
