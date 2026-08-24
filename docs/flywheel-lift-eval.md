@@ -228,7 +228,32 @@ a flat module layout, and a hermetic 223-pass / 1.5s suite once a single require
 (`OPENROUTER_API_KEY=dummy`). `mine-history` grew `--python-bin` (a provisioned venv), `--import-root`
 (a repo subdir scoped onto `PYTHONPATH`), and `--env KEY=VALUE` (stubbed secrets) to mine it. This is the
 "more diverse tasks" lever in progress; the point is that external corpora bring a *provisioning* cost that
-Episodic's own stdlib-only history did not.
+Episodic's own stdlib-only history did not. The 24 ask_ai tasks are certified by construction and score
+correctly through the provisioned gate (oracle→green, empty→red), but the repo's commits bundle prompt/
+context `.md` and JSON data with code, so only ~5 are clean single-responsibility code changes — external
+corpus fit is not automatic.
+
+### 6.3 Tool-using agent, tested: a 4B policy cannot drive it yet
+
+The single-diff runner patches blind — it never sees the code it must change. `agentic.build_tool_agent`
+is a harness-controlled multi-step loop (`READ` / `LS` / `TEST` / `PATCH` against the checkout, sandboxed
+to the workspace) so the policy can read across files before editing. It is unit-tested and validated
+end-to-end on a real external clone: with an *oracle* policy (READ the file, then emit the gold patch) it
+drives the ask_ai clone to green in two steps. But the lever question is whether a real policy exploits it.
+Isolating the lever — same base `Qwen3.5-4B`, no training, single sampler, on the 10 smallest code-only
+mined tasks — single-shot vs 6-step tool agent:
+
+| scorer | tasks | solved |
+|--------|-------|--------|
+| single-shot diff | 10 | 1 |
+| 6-step tool agent | 10 | **0** |
+
+The tool agent solved *fewer*: it even lost the one trivial task (`clamp.py`) single-shot got. A 4B policy
+spends its steps on malformed actions and leaves the checkout in a worse state than one clean diff would.
+The capability is real and sandbox-safe, but **the multi-step protocol needs a stronger policy to pay off**;
+its overhead dominates when the model is weak. This is the same conclusion as §6.1 from the other side:
+the binding constraint is policy capability on hard, multi-file tasks — not the harness, the gate, the
+corpus plumbing, or the tool interface, all of which now work.
 
 ## 7. Reproduce it
 
