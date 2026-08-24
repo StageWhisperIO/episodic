@@ -188,11 +188,47 @@ Findings, stated honestly:
 end-to-end on real tasks, and on the easy real subset it produces a small positive lift. But meaningful,
 noise-separable lift on *hard* real repo-internal tasks is not there at 4B with single-shot SFT, 2-turn
 agentic, or RL-on-gate. All three converge on the same bottleneck: **a 4B base solves ~1/8 held and ~2/19
-train, so there is almost no signal for any method to amplify.** The wall is base capability, not the
-pipeline. The levers that remain are a bigger model (now justified — real tasks leave headroom and the base
-is the limiting factor), more mined tasks from more repos (to shrink the noise band and give RL enough
-successes to bootstrap), and a real multi-step tool-using agent (not a single diff) — which is what actually
-closes multi-file bugs.
+train, so there is almost no signal for any method to amplify.**
+
+### 6.1 Bigger model, tested: `Qwen3-30B-A3B` does not move it
+
+The obvious next hypothesis — "the 4B is just too weak; a bigger model breaks the wall" — was tested
+directly. Same mined corpus, same hold-out-small split (held = 8), single-shot SFT, but
+`Qwen/Qwen3-30B-A3B-Instruct-2507` (a 30B mixture-of-experts) instead of the 4B:
+
+| model | held | base | trained | lift |
+|-------|------|------|---------|------|
+| Qwen3.5-4B | 8 | 1 | 2 | +1 |
+| Qwen3-30B-A3B | 8 | 1 | 1 | **0** |
+
+The 30B solves exactly the same single trivial task (`examples/clamp.py`) as the 4B and **zero** of the
+seven hard multi-file internals (`rewards`, `ids`+`paths`, `service`, `testdetect`, `store`, `normalize`).
+This **refutes the "just use a bigger model" lever for this corpus**: the held tasks are dense-coupling
+repo internals where the missing ingredient is not raw model capacity applied to a single prompt but
+(a) *task shape* — self-contained, single-responsibility changes a model can actually get in one shot —
+and (b) *method* — multi-step read→edit→run tool use rather than one blind diff. (One caveat worth noting:
+the enriched SFT rows had to be diff-size-filtered to fit the 30B's 32768-token training limit, which the
+4B did not enforce; the training set was therefore slightly smaller. But the base — untrained — score being
+identically 1/8 shows the ceiling is the task/prompt, not the training set.)
+
+The corrected read: the wall is **task shape + single-shot method + corpus size**, not base capacity. The
+levers that remain are therefore **more, easier, more diverse mined tasks** (to give a held set with
+tractable units that show separable lift, and to give RL enough base successes to bootstrap) and a **real
+multi-step tool-using agent** (not a single diff) — which is what actually closes multi-file bugs. Bigger
+model alone is spent as a lever here.
+
+### 6.2 More diverse tasks: mining external test-rich repos
+
+To grow the corpus beyond Episodic's own history, the miner was pointed at the `maddox` family of
+production repos. Most are not provisionable on a laptop: `data_lib` pulls torch/torchvision from a
+CUDA-only index and `pymaddox` from a private authenticated index, with tests that download pretrained
+weights over the network; `webapi` needs a live MongoDB + Azure. The one tractable target is
+**`ask_ai/python_api`** — all-public light deps (`fastapi`/`httpx`/`openai`/`tinydb`/`pydantic-settings`),
+a flat module layout, and a hermetic 223-pass / 1.5s suite once a single required secret is stubbed
+(`OPENROUTER_API_KEY=dummy`). `mine-history` grew `--python-bin` (a provisioned venv), `--import-root`
+(a repo subdir scoped onto `PYTHONPATH`), and `--env KEY=VALUE` (stubbed secrets) to mine it. This is the
+"more diverse tasks" lever in progress; the point is that external corpora bring a *provisioning* cost that
+Episodic's own stdlib-only history did not.
 
 ## 7. Reproduce it
 

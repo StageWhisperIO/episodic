@@ -100,6 +100,41 @@ def test_agentic_runner_solves_after_test_feedback(corpus):
     assert calls["n"] >= 2
 
 
+def test_tool_agent_reads_source_then_patches_to_green(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    src_path = next(line[len("+++ b/"):].strip() for line in gold.splitlines()
+                    if line.startswith("+++ b/"))
+    calls = {"n": 0, "second_prompt": ""}
+
+    def generate(model, messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return f"READ {src_path}"
+        calls["second_prompt"] = messages[0]["content"]
+        return "```diff\n" + gold + "```"
+
+    test_command, test_cwd = replay._resolve_test_command(episode, episode["repo_state"]["root"])
+    runner = agentic.build_tool_agent(generate, test_command, max_steps=4, test_cwd=test_cwd)
+    assert flywheel.solved(episode, runner) is True
+    assert calls["n"] >= 2
+    assert "not a file" not in calls["second_prompt"]
+    assert "1\t" in calls["second_prompt"]
+
+
+def test_tool_agent_read_is_sandboxed(corpus):
+    episode = corpus[0]
+    calls = {"prompt": ""}
+
+    def generate(model, messages):
+        calls["prompt"] = messages[0]["content"]
+        return "READ ../../../etc/passwd"
+
+    test_command, test_cwd = replay._resolve_test_command(episode, episode["repo_state"]["root"])
+    runner = agentic.build_tool_agent(generate, test_command, max_steps=1, test_cwd=test_cwd)
+    assert flywheel.solved(episode, runner) is False
+
+
 def test_rollout_and_filter_keeps_only_gate_passing(corpus):
     solvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
     unsolvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "str")

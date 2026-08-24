@@ -14,10 +14,24 @@ def _git(repo, *args, check=True):
     return subprocess.run(["git", "-C", repo, *args], check=check, capture_output=True, text=True)
 
 
-def _pytest(repo, test_paths):
+def _pytest(repo, test_paths, python_bin="python", pythonpath=None, env_extra=None):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    return subprocess.run(["python", "-m", "pytest", "-q", *test_paths],
+    if env_extra:
+        env.update(env_extra)
+    if pythonpath:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = pythonpath + (os.pathsep + existing if existing else "")
+    return subprocess.run([python_bin, "-m", "pytest", "-q", *test_paths],
                           cwd=repo, capture_output=True, text=True, env=env)
+
+
+def _test_command(test_paths, python_bin="python", import_root=None, env_extra=None):
+    prefix = ""
+    if env_extra:
+        prefix += "".join(f"{k}={v} " for k, v in env_extra.items())
+    if import_root:
+        prefix += f"PYTHONPATH={import_root} "
+    return f"{prefix}{python_bin} -m pytest -q " + " ".join(test_paths)
 
 
 def _apply(repo, diff_text):
@@ -43,15 +57,18 @@ def _candidate_commits(repo, max_commits):
     return commits
 
 
-def _split_commit(repo, parent, sha):
+def _split_commit(repo, parent, sha, path_prefix=None):
     full = _git(repo, "diff", parent, sha).stdout
     blocks = [b for b in diffparse.parse_unified_diff(full) if b["unified"]]
+    if path_prefix:
+        blocks = [b for b in blocks if b["file"].startswith(path_prefix.rstrip("/") + "/")]
     tests = [b for b in blocks if _is_verifier_file(b["file"])]
     source = [b for b in blocks if not _is_verifier_file(b["file"])]
     return tests, source
 
 
-def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blocks):
+def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blocks,
+                       python_bin="python", import_root=None, env_extra=None):
     scratch = os.path.join(out_dir, f"{name}_{sha[:12]}")
     subprocess.run(["rm", "-rf", scratch], check=True)
     subprocess.run(["git", "clone", "-q", repo, scratch], check=True, capture_output=True)
@@ -62,6 +79,7 @@ def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blo
     test_diff = diffparse.join_unified(b["unified"] for b in test_blocks)
     source_diff = diffparse.join_unified(b["unified"] for b in source_blocks)
     test_paths = [b["file"] for b in test_blocks if not b["file"].endswith("conftest.py")]
+    live_pythonpath = os.path.join(scratch, import_root) if import_root else None
     if not test_paths or not _apply(scratch, test_diff):
         subprocess.run(["rm", "-rf", scratch], check=True)
         return None
@@ -69,17 +87,17 @@ def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blo
     _git(scratch, "commit", "-q", "-m", "mined base (test injected, red)")
     base_commit = _git(scratch, "rev-parse", "HEAD").stdout.strip()
 
-    red = _pytest(scratch, test_paths)
+    red = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra)
     if red.returncode == 0 or not _apply(scratch, source_diff):
         subprocess.run(["rm", "-rf", scratch], check=True)
         return None
-    green = _pytest(scratch, test_paths)
+    green = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra)
     if green.returncode != 0:
         subprocess.run(["rm", "-rf", scratch], check=True)
         return None
     _git(scratch, "checkout", "--", ".")
 
-    test_command = "python -m pytest -q " + " ".join(test_paths)
+    test_command = _test_command(test_paths, python_bin, import_root, env_extra)
     intent = (f"The tests in {', '.join(test_paths)} fail at the current commit:\n\n"
               f"```\n{red.stdout[-1200:].strip()}\n```\n\nFix the source so the tests pass.")
     episode = new_episode(id=f"mine_{name}_{sha[:12]}", intent=intent)
@@ -97,17 +115,19 @@ def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blo
     return episode
 
 
-def mine_repo(repo, out_dir, max_commits=200, limit=None, save=True):
+def mine_repo(repo, out_dir, max_commits=200, limit=None, save=True,
+              python_bin="python", import_root=None, env_extra=None):
     repo = os.path.abspath(repo)
     os.makedirs(out_dir, exist_ok=True)
     name = os.path.basename(repo.rstrip("/")) or "repo"
     episodes = []
     for sha, parent in _candidate_commits(repo, max_commits):
-        test_blocks, source_blocks = _split_commit(repo, parent, sha)
+        test_blocks, source_blocks = _split_commit(repo, parent, sha, import_root)
         if not test_blocks or not source_blocks:
             continue
         try:
-            episode = _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blocks)
+            episode = _build_from_commit(repo, out_dir, name, sha, parent, test_blocks,
+                                         source_blocks, python_bin, import_root, env_extra)
         except (subprocess.SubprocessError, OSError):
             episode = None
         if episode is None:

@@ -75,6 +75,14 @@ def agentic_runner_for(episode, generate, max_turns):
     return agentic.build_agentic_runner(generate, test_command, max_turns=max_turns, test_cwd=test_cwd)
 
 
+def tool_agent_runner_for(episode, generate, max_steps):
+    from . import agentic
+
+    root = (episode.get("repo_state") or {}).get("root")
+    test_command, test_cwd = replay._resolve_test_command(episode, root)
+    return agentic.build_tool_agent(generate, test_command, max_steps=max_steps, test_cwd=test_cwd)
+
+
 def _completion_solves(episode, text):
     diff = modelrun.extract_diff(text)
 
@@ -156,7 +164,8 @@ def _mlx_runners(model, result, max_tokens):
 
 
 def real_lift(train, held, *, backend, model, sft_path, out_dir, epochs=3, iters=400,
-              lora_rank=32, batch_size=4, learning_rate=1e-4, max_tokens=768, agentic_turns=0):
+              lora_rank=32, batch_size=4, learning_rate=1e-4, max_tokens=768, agentic_turns=0,
+              tool_steps=0):
     build_sft(train, sft_path)
     if backend == "tinker":
         trainer_name = "tinker-sft"
@@ -174,7 +183,10 @@ def real_lift(train, held, *, backend, model, sft_path, out_dir, epochs=3, iters
     else:
         base_gen, trained_gen, cleanup = _mlx_runners(model, result, max_tokens)
 
-    if agentic_turns:
+    if tool_steps:
+        base_for = lambda episode: tool_agent_runner_for(episode, base_gen, tool_steps)
+        trained_for = lambda episode: tool_agent_runner_for(episode, trained_gen, tool_steps)
+    elif agentic_turns:
         base_for = lambda episode: agentic_runner_for(episode, base_gen, agentic_turns)
         trained_for = lambda episode: agentic_runner_for(episode, trained_gen, agentic_turns)
     else:
@@ -188,5 +200,5 @@ def real_lift(train, held, *, backend, model, sft_path, out_dir, epochs=3, iters
         cleanup()
     report.update({"backend": backend, "model": model, "train": len(train),
                    "steps": result.get("steps"), "final_loss": result.get("final_loss"),
-                   "agentic_turns": agentic_turns})
+                   "agentic_turns": agentic_turns, "tool_steps": tool_steps})
     return report

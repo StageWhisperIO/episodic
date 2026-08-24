@@ -782,7 +782,7 @@ def cmd_eval(args):
             lift = flywheel.real_lift(train, held, backend=args.backend, model=args.model,
                                       sft_path=sft, out_dir=out, epochs=args.epochs, iters=args.iters,
                                       lora_rank=args.lora_rank, max_tokens=args.max_tokens,
-                                      agentic_turns=args.agentic_turns)
+                                      agentic_turns=args.agentic_turns, tool_steps=args.tool_steps)
         report["lift"] = lift
         if not args.json:
             print(f"lift [{args.backend}]: base {lift['base_solved']}/{lift['held']} -> "
@@ -799,8 +799,10 @@ def cmd_mine(args):
     from .eval import mine
 
     out = args.out or str(paths.home() / "mined_repos")
+    env_extra = dict(pair.split("=", 1) for pair in (args.env or []))
     episodes = mine.mine_repo(args.repo, out, max_commits=args.max_commits, limit=args.limit,
-                              save=not args.no_save)
+                              save=not args.no_save, python_bin=args.python_bin,
+                              import_root=args.import_root, env_extra=env_extra or None)
     if args.json:
         _print_json({"repo": args.repo, "mined": len(episodes), "ids": [ep["id"] for ep in episodes]})
     else:
@@ -1077,6 +1079,9 @@ def build_parser():
                           help="score with a multi-turn agentic runner (generate -> apply -> run test -> "
                                "feed the failure back -> retry) up to this many turns instead of a single "
                                "shot (default: 0, single shot)")
+    eval_cmd.add_argument("--tool-steps", dest="tool_steps", type=int, default=0,
+                          help="score with a multi-step tool-using agent (READ / LS / TEST / PATCH against "
+                               "the checkout) up to this many steps; overrides --agentic-turns (default: 0)")
     eval_cmd.add_argument("--json", action="store_true")
     eval_cmd.set_defaults(func=cmd_eval)
 
@@ -1092,6 +1097,12 @@ def build_parser():
     mine_cmd.add_argument("--limit", type=int, help="stop after this many certified tasks")
     mine_cmd.add_argument("--no-save", dest="no_save", action="store_true",
                           help="do not persist mined episodes to the store")
+    mine_cmd.add_argument("--python-bin", dest="python_bin", default="python",
+                          help="python interpreter for running the mined tests (e.g. a provisioned venv)")
+    mine_cmd.add_argument("--import-root", dest="import_root",
+                          help="repo subdir to scope mining to and put on PYTHONPATH (e.g. python_api)")
+    mine_cmd.add_argument("--env", action="append",
+                          help="extra KEY=VALUE env var for the test command (repeatable)")
     mine_cmd.add_argument("--json", action="store_true")
     mine_cmd.set_defaults(func=cmd_mine)
 
