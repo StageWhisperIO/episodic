@@ -45,26 +45,47 @@ def solved(episode, runner):
 
 
 def measure_lift(held, base_runner_for, trained_runner_for):
+    from .gate import graded_score
+
     by_class = {}
     base_solved = trained_solved = 0
+    base_frac = trained_frac = 0.0
     for episode in held:
         cls = bug_class(episode)
-        base = solved(episode, base_runner_for(episode))
-        trained = solved(episode, trained_runner_for(episode))
-        base_solved += base
-        trained_solved += trained
+        base = graded_score(episode, base_runner_for(episode))
+        trained = graded_score(episode, trained_runner_for(episode))
+        base_solved += base["ok"]
+        trained_solved += trained["ok"]
+        base_frac += base["pass_fraction"]
+        trained_frac += trained["pass_fraction"]
         stats = by_class.setdefault(cls, {"held": 0, "base": 0, "trained": 0})
         stats["held"] += 1
-        stats["base"] += int(base)
-        stats["trained"] += int(trained)
+        stats["base"] += int(base["ok"])
+        stats["trained"] += int(trained["ok"])
+    n = len(held) or 1
     return {"held": len(held), "base_solved": base_solved, "trained_solved": trained_solved,
-            "lift": trained_solved - base_solved, "by_class": by_class}
+            "lift": trained_solved - base_solved, "by_class": by_class,
+            "base_pass_fraction": round(base_frac / n, 3),
+            "trained_pass_fraction": round(trained_frac / n, 3),
+            "fraction_lift": round((trained_frac - base_frac) / n, 3)}
 
 
 def oracle_vs_empty_lift(held):
     return measure_lift(held,
                         lambda episode: empty_runner,
                         lambda episode: _oracle_diff_runner(_unified_diff(episode)))
+
+
+def learnable_band(episodes, generate, n=4):
+    banded = []
+    stats = []
+    for episode in episodes:
+        runner = modelrun.build_runner(generate)
+        solves = sum(bool(solved(episode, runner)) for _ in range(n))
+        stats.append({"id": episode["id"], "solves": solves, "n": n})
+        if 0 < solves < n:
+            banded.append(episode)
+    return {"banded": banded, "stats": stats}
 
 
 def agentic_runner_for(episode, generate, max_turns):

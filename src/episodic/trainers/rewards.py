@@ -34,3 +34,26 @@ def _score_action(text):
 
 def action_format_reward(prompts=None, completions=None, **kwargs):
     return [_score_action(_text(completion)) for completion in (completions or [])]
+
+
+def graded_gate_reward(episodes):
+    from ..eval import gate
+    from ..replay import modelrun
+    from ..worldmodel.validate import _oracle_diff_runner
+
+    by_id = {episode["id"]: episode for episode in episodes}
+
+    def reward(prompts=None, completions=None, episode_id=None, **kwargs):
+        ids = episode_id or []
+        scores = []
+        for index, completion in enumerate(completions or []):
+            episode = by_id.get(ids[index]) if index < len(ids) else None
+            if episode is None:
+                scores.append(0.0)
+                continue
+            diff = modelrun.extract_diff(_text(completion))
+            graded = gate.graded_score(episode, _oracle_diff_runner(diff))
+            scores.append(graded["pass_fraction"])
+        return scores
+
+    return reward

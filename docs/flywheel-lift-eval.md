@@ -255,6 +255,45 @@ its overhead dominates when the model is weak. This is the same conclusion as §
 the binding constraint is policy capability on hard, multi-file tasks — not the harness, the gate, the
 corpus plumbing, or the tool interface, all of which now work.
 
+### 6.4 Lessons from an outside RL pipeline (Narreddi, *Training AI to Paint with Code*)
+
+A useful outside data point: Surya Narreddi & Cameron Franz RL-trained Qwen-3.5-35B (GRPO) to write
+p5.brush JS that renders watercolours, judged by a model. They hit a ceiling — reward plateaued at 0.65
+with every rollout identical (a flat clip-art flower); *reward climbed but capability did not*. Their
+diagnosis, from decomposing the sub-rewards in isolation, and the fixes that broke through, map directly
+onto our verifiable-reward setting even though their reward is subjective:
+
+- **Their ceiling was a starved, redundant, saturated reward.** Nine sub-signals; four quality judges +
+  prompt-adherence correlated 0.85–0.95 (measuring the same thing five times); a code-length term worth ~⅓
+  of the reward had saturated by step 30 (zero gradient after); the one signal with real variance (HPSv3)
+  was weighted 0.10. **Our analogue:** the gate blended `0.6·tests_pass + 0.4·diff_overlap`, but
+  `diff_overlap` (Jaccard of changed filenames vs the gold patch) rewards *file-targeting, not
+  correctness* — a correlated, gameable term — and the eval layer then collapsed everything to a *binary*
+  `ok`, discarding the partial-credit `tests_pass` the replay already computes. On hard tasks the binary
+  reward is compressed to all-zero → no gradient, which is exactly why STaR had only 2/19 wins to learn from.
+- **Their fix #1: pairwise judging for dynamic range** (absolute 0–10 scores compressed near zero; "which
+  of these two is better?" opened the range). **Our implementation:** `gate.graded_score` surfaces a
+  partial-credit `pass_fraction = passed/(passed+failed+errors)` and `rewards.graded_gate_reward` exposes it
+  as the RL reward (feeds SAO's group-relative `running_baseline`, which turns a graded reward into non-zero
+  advantage *even when no rollout fully passes*). `measure_lift` now reports `base/trained_pass_fraction` and
+  `fraction_lift` alongside binary solves — partial progress the binary metric hides.
+- **Their fix #2: collapse the rubric to orthogonal components; drop the correlated/saturated ones.** **Our
+  implementation:** `graded_score`/`graded_gate_reward` are pure-test (they exclude `diff_overlap`);
+  `gate.reward_components_report` prints each component's mean/variance and the `pass_fraction`↔`diff_overlap`
+  correlation, so a dead or redundant signal is visible the way theirs was.
+- **Their reference-pool + curriculum insight (anchor to achievable examples; a reward that is all-0 or
+  all-1 teaches nothing).** **Our implementation:** `flywheel.learnable_band` samples *n* rollouts per task
+  and keeps only those the base solves on 0<k<n — the band where a gradient exists — so training and
+  eval focus on the learnable frontier instead of all-hard (all-zero) or trivial (all-one) tasks.
+- **Their system-prompt finding: a 400-line API reference made the model hallucinate APIs; a short
+  allowlist beat the full spec.** **Our analogue:** we had been *enriching* prompts with up to 12 KB of base
+  source (the same bloat). The tool agent (§6.3) is the structural fix — the policy `READ`s only what it
+  needs instead of being handed the whole file — and is the direction to keep over source-dumping.
+
+Net: the article confirms our own conclusion from a different domain — once the plumbing works, *reward
+shape and curriculum are the levers*, not more rubric terms. All four mechanisms above ship in-tree with
+tests; the graded reward + learnable-band are now what the stronger-policy runs use.
+
 ## 7. Reproduce it
 
 ```bash

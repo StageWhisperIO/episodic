@@ -4,6 +4,7 @@ import pytest
 
 from episodic import replay
 from episodic.eval import agentic, flywheel, gate, redgreen
+from episodic.trainers import rewards
 from episodic.worldmodel import validate as wm
 
 
@@ -133,6 +134,53 @@ def test_tool_agent_read_is_sandboxed(corpus):
     test_command, test_cwd = replay._resolve_test_command(episode, episode["repo_state"]["root"])
     runner = agentic.build_tool_agent(generate, test_command, max_steps=1, test_cwd=test_cwd)
     assert flywheel.solved(episode, runner) is False
+
+
+def test_graded_score_opens_dynamic_range(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    oracle = gate.graded_score(episode, wm._oracle_diff_runner(gold))
+    empty = gate.graded_score(episode, gate.empty_runner)
+    assert oracle["ok"] is True and oracle["pass_fraction"] == 1.0
+    assert empty["ok"] is False and empty["pass_fraction"] < 1.0
+    assert oracle["pass_fraction"] > empty["pass_fraction"]
+
+
+def test_reward_components_report_has_variance_and_correlation(corpus):
+    report = gate.reward_components_report(corpus[:4], gate.empty_runner)
+    assert report["n"] == 4
+    assert set(report["pass_fraction"]) == {"mean", "var"}
+    assert -1.0 <= report["corr_fraction_overlap"] <= 1.0
+    assert len(report["rows"]) == 4
+
+
+def test_learnable_band_keeps_only_the_gradient_band(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    calls = {"n": 0}
+
+    def alternating(model, messages):
+        calls["n"] += 1
+        return "```diff\n" + gold + "```" if calls["n"] % 2 else "```diff\ngarbage\n```"
+
+    def always_gold(model, messages):
+        return "```diff\n" + gold + "```"
+
+    banded = flywheel.learnable_band([episode], alternating, n=4)
+    assert len(banded["banded"]) == 1
+    assert 0 < banded["stats"][0]["solves"] < 4
+    solved_out = flywheel.learnable_band([episode], always_gold, n=4)
+    assert solved_out["banded"] == [] and solved_out["stats"][0]["solves"] == 4
+
+
+def test_graded_gate_reward_returns_pass_fraction(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    reward = rewards.graded_gate_reward([episode])
+    scores = reward(completions=["```diff\n" + gold + "```", "no diff here"],
+                    episode_id=[episode["id"], episode["id"]])
+    assert scores[0] == 1.0
+    assert scores[1] < 1.0
 
 
 def test_rollout_and_filter_keeps_only_gate_passing(corpus):

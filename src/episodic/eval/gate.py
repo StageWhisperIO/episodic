@@ -19,6 +19,57 @@ def score_episode(episode, runner):
             "verifier_reverted": result.get("verifier_reverted") or []}
 
 
+def graded_score(episode, runner):
+    local = _local_clone_episode(episode)
+    replay.create_replay(local)
+    replay_id = replay.replay_id_for(local)
+    try:
+        result = replay.run_replay(replay_id, "candidate", execute=True, runner=runner)
+    finally:
+        replay.cleanup_replay(replay_id)
+    scores = result.get("scores") or {}
+    tests = result.get("tests") or {}
+    passed = tests.get("passed") or 0
+    failed = tests.get("failed") or 0
+    errors = tests.get("errors") or 0
+    denom = passed + failed + errors
+    fraction = passed / denom if denom else (1.0 if tests.get("ok") else 0.0)
+    return {"ok": bool(tests.get("ok")), "pass_fraction": fraction,
+            "tests_pass": scores.get("tests_pass") or 0.0,
+            "diff_overlap": scores.get("diff_overlap") or 0.0,
+            "passed": passed, "failed": failed, "errors": errors}
+
+
+def _variance(values):
+    if not values:
+        return 0.0
+    mean = sum(values) / len(values)
+    return sum((value - mean) ** 2 for value in values) / len(values)
+
+
+def _correlation(xs, ys):
+    if len(xs) < 2:
+        return 0.0
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / n
+    vx, vy = _variance(xs), _variance(ys)
+    return cov / (vx * vy) ** 0.5 if vx > 0 and vy > 0 else 0.0
+
+
+def reward_components_report(episodes, runner):
+    rows = [{"id": episode["id"], **graded_score(episode, runner)} for episode in episodes]
+    fractions = [row["pass_fraction"] for row in rows]
+    overlaps = [row["diff_overlap"] for row in rows]
+    return {"n": len(rows),
+            "pass_fraction": {"mean": sum(fractions) / len(fractions) if fractions else 0.0,
+                              "var": _variance(fractions)},
+            "diff_overlap": {"mean": sum(overlaps) / len(overlaps) if overlaps else 0.0,
+                             "var": _variance(overlaps)},
+            "corr_fraction_overlap": _correlation(fractions, overlaps),
+            "rows": rows}
+
+
 def empty_runner(model, workspace, prompt_text):
     return "noop", 0
 
