@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 
 from .. import store
@@ -8,30 +9,42 @@ from ..schema import new_episode
 
 _TS = "2026-08-23T10:00:00+00:00"
 _BASE_BRANCH = "episodic-mined-base"
+_ADDED_TEST = re.compile(r"^\+\s*(?:async\s+)?def (test_\w+)", re.MULTILINE)
+
+
+def _added_test_selectors(test_blocks):
+    names = []
+    for block in test_blocks:
+        for match in _ADDED_TEST.finditer(block.get("unified", "")):
+            if match.group(1) not in names:
+                names.append(match.group(1))
+    return names
 
 
 def _git(repo, *args, check=True):
     return subprocess.run(["git", "-C", repo, *args], check=check, capture_output=True, text=True)
 
 
-def _pytest(repo, test_paths, python_bin="python", pythonpath=None, env_extra=None):
+def _pytest(repo, test_paths, python_bin="python", pythonpath=None, env_extra=None, select=None):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     if env_extra:
         env.update(env_extra)
     if pythonpath:
         existing = env.get("PYTHONPATH")
         env["PYTHONPATH"] = pythonpath + (os.pathsep + existing if existing else "")
-    return subprocess.run([python_bin, "-m", "pytest", "-q", *test_paths],
+    select_args = ["-k", select] if select else []
+    return subprocess.run([python_bin, "-m", "pytest", "-q", *select_args, *test_paths],
                           cwd=repo, capture_output=True, text=True, env=env)
 
 
-def _test_command(test_paths, python_bin="python", import_root=None, env_extra=None):
+def _test_command(test_paths, python_bin="python", import_root=None, env_extra=None, select=None):
     prefix = ""
     if env_extra:
         prefix += "".join(f"{k}={v} " for k, v in env_extra.items())
     if import_root:
         prefix += f"PYTHONPATH={import_root} "
-    return f"{prefix}{python_bin} -m pytest -q " + " ".join(test_paths)
+    select_expr = f'-k "{select}" ' if select else ""
+    return f"{prefix}{python_bin} -m pytest -q {select_expr}" + " ".join(test_paths)
 
 
 def _apply(repo, diff_text):
@@ -79,6 +92,7 @@ def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blo
     test_diff = diffparse.join_unified(b["unified"] for b in test_blocks)
     source_diff = diffparse.join_unified(b["unified"] for b in source_blocks)
     test_paths = [b["file"] for b in test_blocks if not b["file"].endswith("conftest.py")]
+    select = " or ".join(_added_test_selectors(test_blocks)) or None
     live_pythonpath = os.path.join(scratch, import_root) if import_root else None
     if not test_paths or not _apply(scratch, test_diff):
         subprocess.run(["rm", "-rf", scratch], check=True)
@@ -87,17 +101,17 @@ def _build_from_commit(repo, out_dir, name, sha, parent, test_blocks, source_blo
     _git(scratch, "commit", "-q", "-m", "mined base (test injected, red)")
     base_commit = _git(scratch, "rev-parse", "HEAD").stdout.strip()
 
-    red = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra)
+    red = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra, select)
     if red.returncode == 0 or not _apply(scratch, source_diff):
         subprocess.run(["rm", "-rf", scratch], check=True)
         return None
-    green = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra)
+    green = _pytest(scratch, test_paths, python_bin, live_pythonpath, env_extra, select)
     if green.returncode != 0:
         subprocess.run(["rm", "-rf", scratch], check=True)
         return None
     _git(scratch, "checkout", "--", ".")
 
-    test_command = _test_command(test_paths, python_bin, import_root, env_extra)
+    test_command = _test_command(test_paths, python_bin, import_root, env_extra, select)
     intent = (f"The tests in {', '.join(test_paths)} fail at the current commit:\n\n"
               f"```\n{red.stdout[-1200:].strip()}\n```\n\nFix the source so the tests pass.")
     episode = new_episode(id=f"mine_{name}_{sha[:12]}", intent=intent)

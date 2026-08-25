@@ -294,6 +294,49 @@ Net: the article confirms our own conclusion from a different domain — once th
 shape and curriculum are the levers*, not more rubric terms. All four mechanisms above ship in-tree with
 tests; the graded reward + learnable-band are now what the stronger-policy runs use.
 
+### 6.5 Applying the lessons: what the graded reward revealed (and a trap it exposed)
+
+**Stronger dense policy, single-shot, graded.** Ran the 10 smallest code-only mined tasks single-shot on
+dense `Qwen3.5-4B` and `Qwen3.5-9B`, scored with `graded_score`:
+
+| model | solved (binary) | mean pass_fraction |
+|-------|-----------------|--------------------|
+| Qwen3.5-4B | 1/10 | 0.853 |
+| Qwen3.5-9B | 0/10 | 0.753 |
+
+At first read the fractions look encouraging — the 4B is "85% of the way there" where binary said 1/10. But
+the per-task fractions were **identical between 4B and 9B on 9 of 10 tasks** (they differ only on
+`clamp.py`: 4B 1.0, 9B 0.0). That is a red flag, and decomposing it (the article's own method) shows why:
+computing the empty-baseline (no-change) fraction locally, the models' fractions *equal the empty baseline
+exactly* on those 9 tasks. **The high fraction was almost entirely a fixed offset — the pre-existing
+always-passing tests in each injected test file — not model progress.** The informative range
+(oracle − empty) on the whole-file command was only:
+
+```
+clamp 1.00 | normalize .20 | store .07 | service .25 | stages .09 | (…) — median ~0.15
+```
+
+So the model's true *advantage over doing nothing* was 0.0 on 9/10 tasks; only `clamp` moved. This is
+exactly the "starved signal swamped by a saturated one" failure the article describes, reproduced in our
+gate. Two fixes, both shipped:
+
+1. **Report advantage, not absolute fraction.** `gate.graded_advantage` returns
+   `pass_fraction − empty_baseline_fraction`; for RL, SAO's group-relative baseline cancels the offset
+   automatically, so `graded_gate_reward` was already correct — but eval reporting must subtract it or it
+   lies.
+2. **Score only the fix-relevant tests (the root fix).** The miner now extracts the test functions the
+   commit *adds* (`_added_test_selectors`) and scopes the stored command with `pytest -k "test_a or …"`.
+   Re-mining ask_ai with this, the informative range jumps from ~0.1 to **0.50–1.00** (three tasks are a
+   clean 0.00→1.00). The graded reward now has real dynamic range on *model-driven* progress: a candidate
+   that fixes one of two target assertions scores 0.5, not 0.90.
+
+**Second conclusion, same as §6.1/6.3:** the dense 9B did **not** beat the 4B on these tasks (identical
+except it lost `clamp`), so a bigger *dense* model is no more a lever than the 30B MoE was. What the lessons
+bought is not a lift number today but the two things the article says actually matter once plumbing works:
+a reward with **dynamic range on the fix-relevant signal** (`-k`-scoped `pass_fraction` + advantage) and a
+**learnable-band** curriculum to spend RL only where that signal is non-zero. Those are the inputs the next
+SAO-on-gate run needs; wiring `graded_gate_reward` into the SAO training loop is the remaining step.
+
 ## 7. Reproduce it
 
 ```bash

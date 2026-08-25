@@ -40,3 +40,12 @@ def test_mines_a_red_green_unit(mined):
 def test_mined_unit_is_test_necessary(mined):
     result = gate.certify_episode(mined[0])
     assert result["test_necessary"] is True
+
+
+def test_mined_command_scopes_to_the_added_test(mined):
+    assert '-k "test_f"' in mined[0]["tests"][0]["command"]
+
+
+def test_added_test_selectors_parses_new_test_defs():
+    blocks = [{"unified": "@@\n+def test_a():\n+    pass\n+async def test_b():\n+    pass\n def helper():\n"}]
+    assert mine._added_test_selectors(blocks) == ["test_a", "test_b"]

@@ -40,6 +40,18 @@ def graded_score(episode, runner):
             "passed": passed, "failed": failed, "errors": errors}
 
 
+def empty_pass_fraction(episode):
+    return graded_score(episode, empty_runner)["pass_fraction"]
+
+
+def graded_advantage(episode, runner, baseline_fraction=None):
+    if baseline_fraction is None:
+        baseline_fraction = empty_pass_fraction(episode)
+    graded = graded_score(episode, runner)
+    return {**graded, "baseline_fraction": baseline_fraction,
+            "advantage": graded["pass_fraction"] - baseline_fraction}
+
+
 def _variance(values):
     if not values:
         return 0.0

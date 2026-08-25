@@ -146,6 +146,16 @@ def test_graded_score_opens_dynamic_range(corpus):
     assert oracle["pass_fraction"] > empty["pass_fraction"]
 
 
+def test_graded_advantage_subtracts_the_empty_baseline(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    oracle = gate.graded_advantage(episode, wm._oracle_diff_runner(gold))
+    assert oracle["advantage"] == oracle["pass_fraction"] - oracle["baseline_fraction"]
+    assert oracle["advantage"] > 0
+    empty = gate.graded_advantage(episode, gate.empty_runner)
+    assert empty["advantage"] == 0.0
+
+
 def test_reward_components_report_has_variance_and_correlation(corpus):
     report = gate.reward_components_report(corpus[:4], gate.empty_runner)
     assert report["n"] == 4
