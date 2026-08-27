@@ -334,8 +334,40 @@ gate. Two fixes, both shipped:
 except it lost `clamp`), so a bigger *dense* model is no more a lever than the 30B MoE was. What the lessons
 bought is not a lift number today but the two things the article says actually matter once plumbing works:
 a reward with **dynamic range on the fix-relevant signal** (`-k`-scoped `pass_fraction` + advantage) and a
-**learnable-band** curriculum to spend RL only where that signal is non-zero. Those are the inputs the next
-SAO-on-gate run needs; wiring `graded_gate_reward` into the SAO training loop is the remaining step.
+**learnable-band** curriculum to spend RL only where that signal is non-zero.
+
+### 6.6 Closing the loop: RL-on-gate runs on the graded reward
+
+The remaining step was to feed that reward into an actual RL loop. `rewards.gate_pass_fraction_reward`
+reads the episode from SAO's per-rollout `meta`, extracts the completion's diff, runs it through the trusted
+gate, and returns `pass_fraction`; `flywheel.build_sao_rows` writes SAO dataset rows carrying `meta=episode`;
+`tinker-sao`'s `resolve_reward` selects it via `reward_funcs`. The corpus was re-mined with the `-k` fix so
+all tasks have wide informative range (89 certified tasks, ranges 0.17–1.00, median 0.67).
+
+A proof-scale run (`Qwen3.5-4B`, 10 train tasks × 2 rollouts, 4 steps, LR 1e-5, reward = graded gate)
+completed end-to-end:
+
+```
+step 0: reward_mean 0.715  advantage_mean +0.260  loss −1.295  updated
+step 1: reward_mean 0.542  advantage_mean −0.155  loss +0.772  updated
+step 2: reward_mean 0.300  advantage_mean −0.234  loss +1.167  updated
+step 3: reward_mean 0.300  advantage_mean −0.010  loss +0.051  updated
+```
+
+The point is the reward column: **it varies (0.30–0.72) and the advantages take both signs**, so every step
+produced a real gradient and all 4 updates applied. That is precisely what the binary reward could not do —
+on these hard tasks binary is all-zero, so an RL loop on it would see zero advantage and never update. The
+loop is closed: sample → gate-verified graded reward → group-relative advantage → DIS-masked
+importance-sampling update → checkpoint.
+
+**Held lift at this scale is 0** (`adv_lift 0.0`; base and trained both score 0 advantage greedily on the 5
+hardest held tasks) — 4 steps and 20 rollouts is far too little to move a 4B, and the run is bounded by the
+cost of the reward itself (each rollout clones a repo and runs pytest, and Tinker sampling latency dominates
+wall-clock). So this closes the *infrastructure* loop and demonstrates the graded reward yields trainable
+gradient; a *measurable* lift needs a run one to two orders of magnitude larger (hundreds of steps, more
+rollouts per prompt for a tighter per-prompt baseline), which is a compute-budget question, not a
+missing-mechanism one. Every piece — mine (`-k`) → certify → graded gate reward → SAO update → advantage
+scoring — now runs in one pipeline.
 
 ## 7. Reproduce it
 

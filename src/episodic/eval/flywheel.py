@@ -33,6 +33,15 @@ def build_sft(train, path):
     return path
 
 
+def build_sao_rows(train, path):
+    with open(path, "w") as fh:
+        for episode in train:
+            user = episode["intent"] + modelrun._DIFF_INSTRUCTION
+            fh.write(json.dumps({"messages": [{"role": "user", "content": user}],
+                                 "meta": episode}) + "\n")
+    return path
+
+
 def solved(episode, runner):
     local = _local_clone_episode(episode)
     replay.create_replay(local)

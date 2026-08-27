@@ -36,24 +36,38 @@ def action_format_reward(prompts=None, completions=None, **kwargs):
     return [_score_action(_text(completion)) for completion in (completions or [])]
 
 
-def graded_gate_reward(episodes):
+def _episode_from_meta(entry):
+    if isinstance(entry, dict) and "diffs" in entry and "repo_state" in entry:
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("episode")
+    return None
+
+
+def gate_pass_fraction_reward(prompts=None, completions=None, meta=None, **kwargs):
     from ..eval import gate
     from ..replay import modelrun
     from ..worldmodel.validate import _oracle_diff_runner
 
+    metas = meta or []
+    scores = []
+    for index, completion in enumerate(completions or []):
+        episode = _episode_from_meta(metas[index]) if index < len(metas) else None
+        if episode is None:
+            scores.append(0.0)
+            continue
+        diff = modelrun.extract_diff(_text(completion))
+        scores.append(gate.graded_score(episode, _oracle_diff_runner(diff))["pass_fraction"])
+    return scores
+
+
+def graded_gate_reward(episodes):
     by_id = {episode["id"]: episode for episode in episodes}
 
     def reward(prompts=None, completions=None, episode_id=None, **kwargs):
         ids = episode_id or []
-        scores = []
-        for index, completion in enumerate(completions or []):
-            episode = by_id.get(ids[index]) if index < len(ids) else None
-            if episode is None:
-                scores.append(0.0)
-                continue
-            diff = modelrun.extract_diff(_text(completion))
-            graded = gate.graded_score(episode, _oracle_diff_runner(diff))
-            scores.append(graded["pass_fraction"])
-        return scores
+        metas = [by_id.get(ids[index]) if index < len(ids) else None
+                 for index in range(len(completions or []))]
+        return gate_pass_fraction_reward(prompts=prompts, completions=completions, meta=metas)
 
     return reward

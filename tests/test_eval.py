@@ -193,6 +193,27 @@ def test_graded_gate_reward_returns_pass_fraction(corpus):
     assert scores[1] < 1.0
 
 
+def test_gate_pass_fraction_reward_reads_episode_from_meta(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    gold = wm._unified_diff(episode)
+    scores = rewards.gate_pass_fraction_reward(
+        completions=["```diff\n" + gold + "```", "garbage", "```diff\n" + gold + "```"],
+        meta=[episode, episode, None])
+    assert scores[0] == 1.0
+    assert scores[1] < 1.0
+    assert scores[2] == 0.0
+
+
+def test_build_sao_rows_carries_episode_meta(corpus, tmp_path):
+    path = flywheel.build_sao_rows(corpus[:2], str(tmp_path / "sao.jsonl"))
+    lines = [line for line in open(path).read().splitlines() if line]
+    assert len(lines) == 2
+    import json as _json
+    row = _json.loads(lines[0])
+    assert row["messages"][0]["role"] == "user"
+    assert row["meta"]["id"] == corpus[0]["id"]
+
+
 def test_rollout_and_filter_keeps_only_gate_passing(corpus):
     solvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
     unsolvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "str")
