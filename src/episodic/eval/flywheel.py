@@ -113,6 +113,12 @@ def tool_agent_runner_for(episode, generate, max_steps):
     return agentic.build_tool_agent(generate, test_command, max_steps=max_steps, test_cwd=test_cwd)
 
 
+def edit_runner_for(episode, generate, fmt="wholefile"):
+    from . import editfmt
+
+    return editfmt.build_edit_runner(generate, editfmt._files_of(episode), fmt=fmt)
+
+
 def _completion_solves(episode, text):
     diff = modelrun.extract_diff(text)
 
