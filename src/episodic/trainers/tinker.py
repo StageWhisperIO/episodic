@@ -305,6 +305,10 @@ class TinkerSAOTrainer:
             else:
                 entry["updated"] = False
             history.append(entry)
+            if os.environ.get("EPISODIC_SAO_VERBOSE"):
+                print(f"[sao] step {step} samples={entry['samples']} "
+                      f"reward_mean={entry['reward_mean']} advantage_mean={entry['advantage_mean']} "
+                      f"loss={entry.get('loss_sum')} updated={entry.get('updated')}", flush=True)
 
         clip_fractions = [entry["clip_fraction"] for entry in history if "clip_fraction" in entry]
         rewards = [entry["reward_mean"] for entry in history if entry.get("reward_mean") is not None]
