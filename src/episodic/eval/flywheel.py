@@ -33,10 +33,16 @@ def build_sft(train, path):
     return path
 
 
-def build_sao_rows(train, path):
+def build_sao_rows(train, path, fmt=None):
+    from . import editfmt
+
     with open(path, "w") as fh:
         for episode in train:
-            user = episode["intent"] + modelrun._DIFF_INSTRUCTION
+            if fmt == "numbered":
+                root = (episode.get("repo_state") or {}).get("root")
+                user = editfmt.numbered_edit_prompt(episode["intent"], root, editfmt._files_of(episode))
+            else:
+                user = episode["intent"] + modelrun._DIFF_INSTRUCTION
             fh.write(json.dumps({"messages": [{"role": "user", "content": user}],
                                  "meta": episode}) + "\n")
     return path

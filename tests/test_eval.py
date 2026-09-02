@@ -214,6 +214,44 @@ def test_build_sao_rows_carries_episode_meta(corpus, tmp_path):
     assert row["meta"]["id"] == corpus[0]["id"]
 
 
+def _numbered_edit_solution(episode):
+    import os
+    import subprocess
+    import tempfile
+
+    path = episode["diffs"][0]["file"]
+    original = (pathlib.Path(episode["repo_state"]["root"]) / path).read_text()
+    with tempfile.TemporaryDirectory() as work:
+        target = pathlib.Path(work) / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(original)
+        subprocess.run(["git", "init", "-q", work], check=True)
+        subprocess.run(["git", "-C", work, "apply", "--recount"],
+                       input=wm._unified_diff(episode), text=True, capture_output=True, check=True)
+        corrected = target.read_text()
+    return f"EDIT {path} 1-100000\n" + corrected.rstrip("\n") + "\nENDEDIT"
+
+
+def test_gate_numbered_edit_reward_scores_applied_edits(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    scores = rewards.gate_numbered_edit_reward(
+        completions=[_numbered_edit_solution(episode), "no edit here", "x"],
+        meta=[episode, episode, None])
+    assert scores[0] == 1.0
+    assert scores[1] < 1.0
+    assert scores[2] == 0.0
+
+
+def test_build_sao_rows_numbered_embeds_line_numbers(corpus, tmp_path):
+    import json as _json
+
+    path = flywheel.build_sao_rows(corpus[:1], str(tmp_path / "n.jsonl"), fmt="numbered")
+    row = _json.loads(open(path).read().splitlines()[0])
+    content = row["messages"][0]["content"]
+    assert "EDIT" in content and "1\t" in content
+    assert row["meta"]["id"] == corpus[0]["id"]
+
+
 def test_rollout_and_filter_keeps_only_gate_passing(corpus):
     solvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
     unsolvable = next(ep for ep in corpus if flywheel.bug_class(ep) == "str")
