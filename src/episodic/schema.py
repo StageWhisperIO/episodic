@@ -66,6 +66,8 @@ def default_repo_state():
         "branch": None,
         "base_commit": None,
         "dirty": False,
+        "setup_patch": None,
+        "test_env": None,
     }
 
 
@@ -182,6 +184,8 @@ EPISODE_SCHEMA = {
                 "branch": {"type": ["string", "null"]},
                 "base_commit": {"type": ["string", "null"]},
                 "dirty": {"type": "boolean"},
+                "setup_patch": {"type": ["string", "null"]},
+                "test_env": {"type": ["object", "null"]},
             },
         },
         "steps": {

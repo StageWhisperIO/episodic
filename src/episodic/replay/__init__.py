@@ -183,6 +183,8 @@ def create_replay(episode, start=None):
         "repo": repo_state.get("repo"),
         "repo_root": repo_root,
         "branch": repo_state.get("branch"),
+        "setup_patch": repo_state.get("setup_patch"),
+        "test_env": repo_state.get("test_env"),
         "initial_prompt": episode.get("intent", ""),
         "test_command": test_command,
         "test_cwd": test_cwd,
@@ -209,7 +211,7 @@ def create_replay(episode, start=None):
     return manifest
 
 
-def _run_cmd(args, cwd=None, timeout=60, shell=False):
+def _run_cmd(args, cwd=None, timeout=60, shell=False, stdin=None, env=None):
     try:
         result = subprocess.run(
             args,
@@ -218,10 +220,25 @@ def _run_cmd(args, cwd=None, timeout=60, shell=False):
             text=True,
             timeout=timeout,
             shell=shell,
+            input=stdin,
+            env=env,
         )
         return result.stdout + result.stderr, result.returncode
     except Exception:
         return "", -1
+
+
+def _test_environment(workspace, test_env):
+    env = dict(os.environ)
+    if test_env:
+        env.update({str(k): str(v) for k, v in test_env.items()})
+    roots = [str(workspace)]
+    src = Path(workspace) / "src"
+    if src.is_dir():
+        roots.append(str(src))
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join(roots + ([existing] if existing else []))
+    return env
 
 
 def _within(path, root):
@@ -251,6 +268,62 @@ def _init_git_baseline(workspace):
     _run_cmd(["git", "-C", str(workspace),
               "-c", "user.email=replay@episodic.local", "-c", "user.name=episodic",
               "commit", "-q", "-m", "replay base"], timeout=30)
+
+
+def _ensure_mirror(remote_url):
+    mirror_dir = os.environ.get("EPISODIC_MIRROR_DIR")
+    if not mirror_dir:
+        return None
+    key = hashlib.sha1(remote_url.encode()).hexdigest()[:16]
+    mirror = Path(mirror_dir) / f"{key}.git"
+    if (mirror / "HEAD").exists():
+        return str(mirror)
+    Path(mirror_dir).mkdir(parents=True, exist_ok=True)
+    _, code = _run_cmd(["git", "clone", "--bare", "--filter=blob:none", "--quiet",
+                        remote_url, str(mirror)], timeout=600)
+    if code != 0:
+        shutil.rmtree(mirror, ignore_errors=True)
+        return None
+    return str(mirror)
+
+
+def _clone_workspace(remote_url, workspace):
+    mirror = _ensure_mirror(remote_url)
+    if mirror:
+        _, code = _run_cmd(["git", "clone", "--reference-if-able", mirror,
+                            "--filter=blob:none", "--quiet", remote_url, str(workspace)], timeout=600)
+        if code == 0 and workspace.exists():
+            return 0
+        if workspace.exists() and not workspace.is_symlink():
+            shutil.rmtree(workspace, ignore_errors=True)
+    _, code = _run_cmd(["git", "clone", "--filter=blob:none", "--quiet",
+                        remote_url, str(workspace)], timeout=600)
+    if code != 0:
+        if workspace.exists() and not workspace.is_symlink():
+            shutil.rmtree(workspace, ignore_errors=True)
+        _, code = _run_cmd(["git", "clone", "--quiet", remote_url, str(workspace)], timeout=600)
+    return code
+
+
+def _apply_setup_patch(workspace, setup_patch):
+    if not setup_patch or not setup_patch.strip():
+        return True
+    if not setup_patch.endswith("\n"):
+        setup_patch += "\n"
+    applied = False
+    for extra in (["--recount"], ["--recount", "--3way"]):
+        _, code = _run_cmd(["git", "-C", str(workspace), "apply", "--whitespace=nowarn", *extra],
+                           stdin=setup_patch, timeout=60)
+        if code == 0:
+            applied = True
+            break
+    if not applied:
+        return False
+    _run_cmd(["git", "-C", str(workspace), "add", "-A"], timeout=30)
+    _, code = _run_cmd(["git", "-C", str(workspace),
+                        "-c", "user.email=replay@episodic.local", "-c", "user.name=episodic",
+                        "commit", "-q", "-m", "replay red baseline (setup patch)"], timeout=30)
+    return code == 0
 
 
 _NOISE_DIRS = ("__pycache__/", ".git/", ".pytest_cache/", "node_modules/", ".mypy_cache/",
@@ -304,6 +377,7 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
     remote_url = manifest.get("remote_url")
     base_commit = manifest.get("base_commit")
     repo = manifest.get("repo")
+    setup_patch = manifest.get("setup_patch")
     test_command = manifest.get("test_command")
     test_cwd = manifest.get("test_cwd")
     expected_files = set(manifest.get("expected_outcome", {}).get("files_changed", []))
@@ -326,14 +400,14 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
                 "executed": True, "scores": None}
 
     if remote_url:
-        out, code = _run_cmd(["git", "clone", remote_url, str(workspace)], timeout=120)
+        code = _clone_workspace(remote_url, workspace)
         if code != 0 or not workspace.exists():
             if workspace.exists() and not workspace.is_symlink():
                 shutil.rmtree(workspace, ignore_errors=True)
             return {"error": f"git clone failed (rc={code})", "replay_id": replay_id,
                     "model": model, "executed": True, "scores": None}
         if base_commit:
-            _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=30)
+            _, checkout_rc = _run_cmd(["git", "-C", str(workspace), "checkout", base_commit], timeout=60)
             if checkout_rc != 0:
                 shutil.rmtree(workspace, ignore_errors=True)
                 return {"error": f"git checkout {base_commit!r} failed", "replay_id": replay_id,
@@ -356,6 +430,12 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
 
     if not workspace_created and workspace.exists() and not workspace.is_symlink():
         shutil.rmtree(workspace, ignore_errors=True)
+
+    if workspace_created and setup_patch:
+        if not _apply_setup_patch(workspace, setup_patch):
+            shutil.rmtree(workspace, ignore_errors=True)
+            return {"error": "setup_patch failed to apply", "replay_id": replay_id,
+                    "model": model, "executed": True, "scores": None}
 
     runner_template = runner_cmd or os.environ.get("EPISODIC_REPLAY_CMD")
     ran = False
@@ -396,7 +476,9 @@ def run_replay(replay_id, model, start=None, runner_cmd=None, execute=False, run
     if workspace_created and test_command:
         try:
             test_cwd_dir = str(workspace / test_cwd) if test_cwd else str(workspace)
-            out, rc = _run_cmd(test_command, cwd=test_cwd_dir, timeout=120, shell=True)
+            test_environ = _test_environment(workspace, manifest.get("test_env"))
+            out, rc = _run_cmd(test_command, cwd=test_cwd_dir, timeout=300, shell=True,
+                               env=test_environ)
             test_rc = rc
             ts = now_iso()
             tests_result = testdetect.detect_test_run(test_command, out, ts, exit_code=rc)
