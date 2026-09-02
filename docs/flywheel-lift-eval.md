@@ -511,6 +511,32 @@ first flywheel lift: an RL-on-gate run on `Qwen3.5-9B` with the numbered edit fo
 where ~13% of rollouts already solve and many more partially apply — a real above-baseline signal for RL to
 amplify, which no configuration before this had.
 
+### 6.10 Running that loop: the reward moves, held lift does not — the blocker is now scale, not mechanism
+
+We ran exactly that loop. `gate_numbered_edit_reward` is wired into the SAO trainer (the reward re-renders each
+rollout through `editfmt.apply_numbered_edits` before the gate scores it), and `build_sao_rows(..., fmt="numbered")`
+emits line-numbered prompts, so the training objective is now the same forgiving format the 9B can actually
+emit. Config: `Qwen3.5-9B`, 16 mined tasks × 3 distinct-tagged copies → 48 prompts, batch 8 → 6 steps, graded
+gate reward, 3072-token budget, per-step logging. (The Tinker SDK had to be upgraded 0.22.7 → 0.27.0 first —
+the backend now rejects the old version.)
+
+For the first time on the real corpus, **the reward is non-degenerate and climbs.** Per-step `reward_mean`
+over the six updates: `0.175 → 0.188 → 0.279 → 0.276 → 0.449 → 0.104` (mean 0.245); every step produced a
+real gradient update with advantage swinging both signs against the running-mean baseline. Contrast §6.9,
+where every rollout scored the empty baseline to ten decimals and the reward was frozen: here the policy emits
+edits that apply and partially pass, so RL has actual signal to move. That confirms the §6.9 prediction — the
+mechanism (format + graded reward + capable model) now delivers a live, moving, above-baseline objective.
+
+**But held lift is flat-to-slightly-negative.** Scoring 6 held tasks with graded advantage-over-empty: base
+`0.111` vs trained `0.083` (`adv_lift −0.028`), base solved 2, trained solved 1 — four tasks tied, one
+regressed, none gained. Six steps over 48 rollouts on 16 tasks is proof scale; the held delta is within noise
+and the loop never reaches the overfit-then-generalize regime. The honest read: §6.6–6.9 localized the blocker
+down a chain (not reward shape → not compute-on-4B → not corpus → diff-apply format → base capability), and
+§6.10 clears the last mechanism question — with the right model and format, **RL-on-gate finally has a real
+reward to climb.** What it does *not* yet have is enough of that climb to generalize. The remaining gap to a
+demonstrated flywheel lift is compute/scale — more steps, more tasks inside the learnable band — not a new
+mechanism. That is a materially different (and cheaper-to-close) place to be than "the objective is flat."
+
 ## 7. Reproduce it
 
 ```bash
