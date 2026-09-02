@@ -369,9 +369,157 @@ rollouts per prompt for a tighter per-prompt baseline), which is a compute-budge
 missing-mechanism one. Every piece — mine (`-k`) → certify → graded gate reward → SAO update → advantage
 scoring — now runs in one pipeline.
 
+### 6.7 Scaling the corpus: storage-safe SWE-rebench ingestion
+
+The levers above all hit the same wall — a 4B's base capability on a corpus that is small (a few dozen
+tasks) and low-diversity (mostly one or two mined repos). The RLing-Qwen lesson (§6.4) is that once the
+plumbing works, curriculum is a lever; but curriculum needs *scale and diversity* of trusted tasks. The
+largest decontaminated, training-oriented source is **SWE-rebench** (`nebius/SWE-rebench`, 21,336 instances
+mined automatically from real GitHub PRs, each already validated FAIL_TO_PASS/PASS_TO_PASS). The problem it
+raises is storage: a laptop cannot hold 21k repo checkouts, let alone 21k dependency environments.
+
+The design that overcomes this is **reference, never materialize**. `eval/swerebench.py` maps each instance
+into a metadata-only `CodingEpisode`: `remote_url` + upstream `base_commit` + the gold `patch` (source only,
+verifier files filtered out) as `diffs`, the `test_patch` stored as the new `repo_state.setup_patch`, and the
+fix-relevant `-k` selector derived from FAIL_TO_PASS (§6.5's scoping, for free). No repo is ever persisted;
+an episode is ~13.6 KB, so **the entire 21,336-instance corpus is ~283 MB of metadata**. Ingestion streams
+rows through HuggingFace's datasets-server REST API (`/rows`, paginated) — pure JSON over HTTP, **zero
+parquet download**, so nothing lands in the local dataset cache either.
+
+A full repo exists only ephemerally, at score time, reusing replay's existing clone→checkout→run→`rmtree`
+path and its 2 GB free-space guard. Two changes made metadata-only episodes runnable: (1) replay now applies
+and commits `setup_patch` right after checkout, reconstructing the RED baseline (the upstream `base_commit`
+does not contain the test — unlike a mined episode whose scratch tree bakes the test in) before the runner
+and tests run, so `_protect_verifier` and diff-overlap see the injected test as the baseline; (2) the clone
+is a blobless partial clone (`--filter=blob:none`, plain-clone fallback) so a checkout is tens of MB, not
+hundreds.
+
+This certifies against real GitHub repos, not fixtures. `swerebench_0b01001001__spectree-64`, pulled straight
+from the dataset through the trusted gate:
+
+```
+EMPTY  ok=False frac=0.000  (RED reconstructed from setup_patch — the injected test fails without the fix)
+ORACLE ok=True  frac=1.000  (GREEN — the gold source diff makes it pass)
+```
+
+A clean 0.00→1.00 range in ~3–4 s per scoring, clone auto-cleaned. The honest limit is the same provisioning
+funnel as §6.2. A one-instance-per-repo sweep over 8 distinct repos certified **1/8 as-is** (spectree); the
+other seven hit import/collection errors — the dependency wall, not a mapping bug.
+
+**Provisioning lifts that yield (`eval/provision.py`).** Each instance ships `install_config`
+(`install: "pip install -e .[extras]"`, `pip_packages`, `pre_install`, `python`). `ensure_repo_venv` builds a
+**per-repo cached deps-venv** from it (system-package `pre_install` steps like `apt-get` are best-effort and
+skipped; the editable flag is dropped so the workspace source, prepended on `PYTHONPATH`, shadows the
+installed copy — the generalised ask_ai pattern), and the gate runs tests through it via the new
+`repo_state.test_env` hook (replay merges the venv `PATH` + workspace `PYTHONPATH` at test time). Re-running
+the same 12 distinct-repo sweep **with** provisioning: **9/12 provisioned, 4/12 certified** (spectree,
+scim2-filter-parser, bqtools, shipwright) — up from 1/8. The misses are honest: GUI/headless repos
+(`sepal_ui`, ipywidgets/solara) collect zero tests on a Mac, a few need system libs that don't build, and
+three land `NEEDS_MORE` (oracle improves but one selected test stays red — the `-k` name match over-selects
+vs the exact FAIL_TO_PASS node ids, a known refinement). Venv cache was 1.6 GB for 9 repos, in job-tmp.
+
+Two more replay additions make the RL loop over these tasks cheap: (1) `repo_state.test_env` (above); (2) an
+opt-in **per-repo blobless bare-mirror cache** (`EPISODIC_MIRROR_DIR`) — the first clone of a repo populates
+a bare mirror, every later clone uses `--reference-if-able`, so RL rollouts that re-clone the same repo each
+step pay the history transfer once. So all 21k ingest for free as `certified_by_source` metadata; we re-run
+the gate only on the provisionable slice, and that slice is now ~3× larger. The pipeline — stream → map →
+clone-at-commit → inject test → provision → certify → clean up — is proven end-to-end against real GitHub
+repos, and the storage constraint is retired: 283 MB of metadata, bounded ephemeral clones + per-repo venvs,
+nothing else on disk.
+
+### 6.8 Lift on the diversified corpus: the wall persists, now measured with the graded metric
+
+With provisioning and mirror-caching in place, the corpus can grow, but building a *large* diverse certified
+corpus is provisioning-bound: SWE-rebench has few instances per repo (21,336 instances across thousands of
+repos), so ≈one repo must be provisioned per certified task, at ~20–140 s each and a ~1/9 certify-of-provision
+rate — roughly one certified task per 5–15 min on a laptop. That is the SWE-bench-was-built-for-Docker reality;
+it argues for a cluster or the shipped `docker_image`s, not a fundamentally different design.
+
+So the fastest current lift read is still the ready 89-task mined `-k` corpus. Difficulty-stratified
+(hold out the 6 smallest tractable tasks, train on 24), `Qwen3.5-4B`, tinker-SFT on the gold diffs, scored
+through the graded gate:
+
+```
+base_solved 0/6   trained_solved 0/6   binary lift 0
+base_pass_fraction 0.389   trained_pass_fraction 0.389   fraction_lift 0.0
+```
+
+The point of using the **graded** metric here (§6.5) is that it can reveal partial learning that binary solves
+hide — and it shows exactly none: base and trained produce the *same* pass_fraction. This is the same wall §6
+has hit from every angle, now confirmed with the sensitive metric on the tractable slice: a 4B at a capability
+plateau on real repo-internal tasks, where SFT/RL have nothing to amplify. Lift is real and reproducible on
+*self-contained synthetic* tasks (§5, base 9→13/16); it does not appear on the real corpus at this base size
+and corpus scale. The infrastructure to change that — storage-safe ingestion of 21k diverse tasks (§6.7),
+provisioning that ~triples yield, and a mirror cache that makes RL rollouts cheap — is now in place, and the
+measurement is instrumented (graded `fraction_lift`), so the threshold-crossing is what we watch for as the
+certified corpus grows and compute scales.
+
+### 6.9 The compute axis, tested — and the real bottleneck, localized to diff-format
+
+To test whether *compute* (not corpus) is the constraint, we ran a 16×-larger RL-on-gate loop than the §6.6
+proof: 16 mined tasks × 16 distinct-tagged copies → 256 prompts → 64 planned steps, graded gate reward,
+copy-major interleave so every task recurs throughout, per-step logging (`EPISODIC_SAO_VERBOSE`). It never
+needed 64 steps to answer the question. Over the first 8 steps (two full passes over the 16 tasks in batches
+of 4), the loop produced exactly **four** distinct `reward_mean` values — one per task-batch — and each equals
+that batch's **empty-baseline mean** to ten decimals (batch t0–3 → 0.6606 = mean(0.833,0.909,0.400,0.500);
+batch t4–7 → 0.250 = mean(0.500,0,0.500,0)), *unchanged* across passes despite the updates. Every rollout
+scores the baseline; there is no positive-advantage signal. **More compute cannot help — the compute axis is
+not the bottleneck.**
+
+Why do rollouts never clear baseline, when the reward has healthy range (a no-model check: gold=1.00 on all
+16 tasks, empty 0.00–0.91, 13/16 span ≥0.5)? A direct base-`Qwen3.5-4B` probe answers it: over 10 samples on
+5 tasks, the model emits non-empty unified diffs (500–750 chars) that **apply 0/10 of the time** — so the gate
+falls back to the unmodified tree and returns the empty baseline exactly. The wall on the mined corpus is not
+"can't find the fix," it is **can't emit a unified diff that applies** against the exact source. That is a
+format/tooling limit, and it explains every prior null (the §6.8 `0.389==0.389`, the §6.6 zero lift): the RL
+and SFT objectives are flat because the policy's outputs collapse to baseline before quality is ever measured.
+
+That reframed the question toward output format, so `eval/editfmt.py` implements two forgiving alternatives to
+unified diffs — **whole-file** (`### FILE:` + a fenced complete file, written verbatim) and **line-anchored
+numbered edits** (the file is shown with line numbers; the model emits `EDIT <path> <start>-<end>` blocks
+applied bottom-to-top so earlier edits don't shift later line numbers) — and a controlled 3-format probe put
+the same base `Qwen3.5-4B` through all three (8 tasks × 4 samples = 32/format):
+
+```
+unified-diff   applied  4/32   solved 0/32
+whole-file     applied  7/32   solved 0/32   (highest apply rate — ~2× diff)
+numbered       applied  2/32   solved 0/32   (lowest — a 4B won't emit the EDIT syntax)
+```
+
+The format **does** move apply-rate (whole-file ~2× diff; line-numbers are worst because a 4B can't follow the
+unfamiliar edit grammar — the line-number trick that helps strong coding agents needs a model able to emit it),
+but **every format solves 0/32.** The earlier one-off whole-file solve was noise. This is the decisive
+correction to the "edit-format is the lever" read: removing the apply barrier just reveals that the edits are
+*wrong* — the dominant wall is fix **correctness**, i.e. base capability on real repo-internal tasks, not
+output format. Whole-file is also truncation-bound (it only applies when the complete file fits the token cap;
+larger files never close their fence). Net across §6.6–6.9: **neither compute, reward shape, nor edit format is
+the binding constraint on the real corpus — base model capability is.** The format infra is not wasted, though:
+it removes the diff-apply confound that suppressed *every* prior model comparison (the "bigger model refuted"
+verdicts all ran on diffs that apply ~13% of the time), so the honest next test is a stronger base model
+through a forgiving format.
+
+**That test lands the first real signal (`stronger_probe.py`).** Running `Qwen3.5-9B` over the same 8 tasks:
+whole-file **applied 0/6** — Qwen3.5 is a reasoning model, so it spends the token budget on `<think>` and the
+complete-file block truncates before it closes; but the **line-anchored numbered format applied 15/24 (63%)
+and solved 3/24 (12.5%)**. That is the first non-trivial solve rate anywhere on the real corpus (the 4B was
+0/32 in *every* format), and it vindicates the line-number design precisely where it should: the tiny edit
+output survives the reasoning budget, and a 9B *can* emit the `EDIT <path> <start>-<end>` grammar a 4B cannot.
+So the binding constraint is capability — but it is crossable, and crossing it requires the **right format for
+the model**: line-anchored edits for a capable reasoning model, not unified diffs (which hid the 9B's ability
+behind a 13%-apply confound) and not whole-file (which truncates). This is the concrete, evidenced path to the
+first flywheel lift: an RL-on-gate run on `Qwen3.5-9B` with the numbered edit format and the graded reward,
+where ~13% of rollouts already solve and many more partially apply — a real above-baseline signal for RL to
+amplify, which no configuration before this had.
+
 ## 7. Reproduce it
 
 ```bash
+# Ingest SWE-rebench as metadata-only episodes (streams the REST API; no repo/parquet stored):
+python -c "from episodic.eval import swerebench; print(len(swerebench.ingest(limit=200)))"
+
+# Provision a repo's deps-venv and certify one instance through the gate (per-repo cached):
+#   EPISODIC_PROVISION_DIR=/tmp/prov EPISODIC_MIRROR_DIR=/tmp/mirrors python harvest_certified.py
+
 # Deterministic, no model — the CI gate (gate discrimination + lift plumbing):
 episodic eval-flywheel --generate --json          # exit 0 iff every task's gate is clean
 python -m pytest tests/test_eval.py -q
