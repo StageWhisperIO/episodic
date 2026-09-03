@@ -352,6 +352,24 @@ def test_tinker_sao_running_mean_baseline(tmp_path, monkeypatch):
     assert result["history"][0]["advantage_mean"] == 0.5
 
 
+def test_tinker_sao_group_relative_baseline(tmp_path, monkeypatch):
+    calls = _install_fake_tinker(monkeypatch)
+    dataset = tmp_path / "sft.jsonl"
+    _write_rows(dataset, _sao_rows()[:1])
+    config = {"batch_size": 1, "group_size": 2, "group_normalize": False,
+              "reward_funcs": [REWARD_REF]}
+
+    result = trainers.get("tinker-sao").train(str(dataset), str(tmp_path / "out"), config)
+
+    assert result["baseline"] == "group"
+    assert result["group_size"] == 2
+    assert all(call["num_samples"] == 2 for call in calls["sample"])
+    data = calls["forward_backward"][0]["data"]
+    assert len(data) == 2
+    assert data[0].loss_fn_inputs["advantages"][-1] == -0.5
+    assert data[1].loss_fn_inputs["advantages"][-1] == 0.25
+
+
 class FakeCritic:
     def __init__(self):
         self.value_calls = []

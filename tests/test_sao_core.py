@@ -4,6 +4,20 @@ from collections import deque
 from episodic.trainers import sao
 
 
+def test_group_advantages_center_without_normalize():
+    assert sao.group_advantages([1.0, 2.0, 3.0], normalize=False) == [-1.0, 0.0, 1.0]
+
+
+def test_group_advantages_normalize_by_std():
+    advantages = sao.group_advantages([1.0, 2.0], normalize=True)
+    assert advantages == [-1.0, 1.0]
+
+
+def test_group_advantages_zero_variance_is_flat():
+    assert sao.group_advantages([0.5, 0.5, 0.5], normalize=True) == [0.0, 0.0, 0.0]
+    assert sao.group_advantages([]) == []
+
+
 def test_dis_mask_keeps_in_region_and_masks_outside():
     advantages, masked = sao.dis_mask(
         [1.0, 1.0, 1.0], [0.0, 0.5, -0.5], [0.0, 0.0, 0.0], 0.2, 0.2)
