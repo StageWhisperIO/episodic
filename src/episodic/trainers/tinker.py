@@ -202,6 +202,8 @@ class TinkerSAOTrainer:
         max_tokens = config.get("max_tokens", 128)
         temperature = config.get("temperature", 1.0)
         batch_size = config.get("batch_size", 1)
+        group_size = max(1, config.get("group_size", 1))
+        group_normalize = config.get("group_normalize", True)
         epsilon_low = config.get("epsilon_low", sao.DEFAULT_EPSILON_LOW)
         epsilon_high = config.get("epsilon_high", sao.DEFAULT_EPSILON_HIGH)
         baseline_window = config.get("baseline_window", sao.DEFAULT_BASELINE_WINDOW)
@@ -243,31 +245,40 @@ class TinkerSAOTrainer:
             for prompt in chunk:
                 prompt_ids = _token_ids(tokenizer.apply_chat_template(
                     [prompt["user"]], add_generation_prompt=True, tokenize=True))
+                key = prompt["user"].get("content", "")
                 response = sampling.sample(
                     prompt=types.ModelInput.from_ints(prompt_ids),
-                    num_samples=1,
+                    num_samples=group_size,
                     sampling_params=types.SamplingParams(max_tokens=max_tokens, temperature=temperature),
                 ).result()
-                sequence = response.sequences[0] if response.sequences else None
-                if sequence is None:
+                samples = []
+                for sequence in response.sequences:
+                    tokens = list(sequence.tokens)
+                    if not tokens:
+                        continue
+                    action_text = _strip_reasoning(tokenizer.decode(tokens))
+                    reward = score(key, action_text, prompt.get("meta"))
+                    samples.append((tokens, list(sequence.logprobs), reward))
+                if not samples:
                     continue
-                tokens = list(sequence.tokens)
-                if not tokens:
-                    continue
-                action_text = _strip_reasoning(tokenizer.decode(tokens))
-                key = prompt["user"].get("content", "")
-                reward = score(key, action_text, prompt.get("meta"))
-                if value_model is not None:
-                    baseline = value_model.value([key])[0]
+                rewards = [reward for _, _, reward in samples]
+                if group_size > 1 and value_model is None:
+                    advantages = sao.group_advantages(rewards, normalize=group_normalize)
                 else:
-                    baseline = sao.running_baseline(key, prompt_windows, global_window)
-                    prompt_windows.setdefault(key, deque(maxlen=baseline_window)).append(reward)
-                    global_window.append(reward)
-                advantage = reward - baseline
-                step_rewards.append(reward)
-                step_advantages.append(advantage)
-                per_token = advantage / len(tokens) if length_normalize else advantage
-                rollouts.append((prompt_ids, tokens, list(sequence.logprobs), per_token, key))
+                    advantages = []
+                    for reward in rewards:
+                        if value_model is not None:
+                            baseline = value_model.value([key])[0]
+                        else:
+                            baseline = sao.running_baseline(key, prompt_windows, global_window)
+                            prompt_windows.setdefault(key, deque(maxlen=baseline_window)).append(reward)
+                            global_window.append(reward)
+                        advantages.append(reward - baseline)
+                for (tokens, seq_logprobs, reward), advantage in zip(samples, advantages):
+                    step_rewards.append(reward)
+                    step_advantages.append(advantage)
+                    per_token = advantage / len(tokens) if length_normalize else advantage
+                    rollouts.append((prompt_ids, tokens, seq_logprobs, per_token, key))
 
             entry = {
                 "step": step,
@@ -322,7 +333,9 @@ class TinkerSAOTrainer:
             "updates": sum(1 for entry in history if entry.get("updated")),
             "epsilon_low": epsilon_low,
             "epsilon_high": epsilon_high,
-            "baseline": "critic" if value_model is not None else "running_mean",
+            "baseline": ("critic" if value_model is not None
+                         else ("group" if group_size > 1 else "running_mean")),
+            "group_size": group_size,
             "critic_model": config.get("critic_model"),
             "baseline_window": baseline_window,
             "sampler_refresh_steps": refresh_steps,

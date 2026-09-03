@@ -51,6 +51,20 @@ def running_baseline(key, prompt_windows, global_window):
     return 0.0
 
 
+def group_advantages(rewards, normalize=True, eps=1e-6):
+    count = len(rewards)
+    if count == 0:
+        return []
+    mean = sum(rewards) / count
+    centered = [reward - mean for reward in rewards]
+    if not normalize or count < 2:
+        return centered
+    std = math.sqrt(sum(value * value for value in centered) / count)
+    if std < eps:
+        return [0.0] * count
+    return [value / std for value in centered]
+
+
 def dis_mask(advantages, current_logprobs, rollout_logprobs, epsilon_low, epsilon_high):
     masked_advantages = []
     masked = 0
