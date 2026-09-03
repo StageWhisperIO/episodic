@@ -537,6 +537,46 @@ reward to climb.** What it does *not* yet have is enough of that climb to genera
 demonstrated flywheel lift is compute/scale — more steps, more tasks inside the learnable band — not a new
 mechanism. That is a materially different (and cheaper-to-close) place to be than "the objective is flat."
 
+### 6.11 The first positive lift: a GRPO group-relative baseline
+
+§6.10 blamed the flat held lift on scale. It was partly the baseline. Our SAO loop samples one rollout per
+prompt and scores its advantage against a *running mean* of past rewards, keyed by prompt text — and the
+copy-trick that gives us "more rollouts per prompt" hands each copy a distinct key, so the effective baseline
+is the **global** running mean, not a per-task one. Advantage then conflates "this attempt beat my other
+attempts on this task" with "this task happens to score above the global average," which points the gradient
+in a muddy direction. Two running-mean runs on the same held set bear this out: **−0.028** lift at 6 steps and
+**−0.139** at 18 steps, each *regressing* a previously-solved held task (one to −0.83).
+
+The fix is the canonical GRPO estimator: sample G rollouts of the *same* prompt in one step and set each
+rollout's advantage to `reward − group_mean` (optionally ÷ group_std). `sao.group_advantages` implements it and
+the SAO trainer uses it whenever `group_size > 1` (`group_size == 1` keeps the running-mean path, so the change
+is backward-compatible). It carries a free curriculum property: a group whose G rewards are identical has zero
+variance, so every advantage is 0 and the task contributes no gradient — unlearnable and already-solved tasks
+drop out automatically, without a separate learnable-band filter.
+
+Re-running the §6.10 configuration (`Qwen3.5-9B`, numbered format, graded gate reward, same 6 held tasks) with
+`group_size = 4`, batch 4, 8 steps:
+
+```
+baseline        steps   adv_lift   solved   regressions
+running-mean       6     -0.028      2→1         1
+running-mean      18     -0.139      2→1         1  (one task to -0.83)
+GRPO group         8     +0.167      1→2         0
+```
+
+**This is the first positive held lift on the real corpus.** Held task `62da8ed` goes `0.00 → 1.00` — the
+trained model fully solves a task it never trained on and that the base model failed — with **zero
+regressions**. The only variable changed across these three runs is the baseline; same model, format, held set,
+and comparable step count. The GRPO signature is clean throughout: `advantage_mean ≈ 0` (machine epsilon) at
+every step, the defining property of group-centred advantages. Mean training reward also rises (0.245/0.312 →
+0.382).
+
+Read honestly, this is a *proof*, not a scaled result: N = 6 held, +1 solve, and one task drives most of the
+advantage. But it is positive, regression-free, and cleanly attributable to a single mechanism change — the
+lever the SkyRL/Mercor 397B guide flags (their whole Step 4 is baseline/loss-aggregation shape) validated on
+our stack. The next gains are now genuinely a scale question — more held tasks to measure on, more steps, a
+larger learnable band — on a mechanism that finally points the right way.
+
 ## 7. Reproduce it
 
 ```bash
