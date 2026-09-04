@@ -577,6 +577,34 @@ lever the SkyRL/Mercor 397B guide flags (their whole Step 4 is baseline/loss-agg
 our stack. The next gains are now genuinely a scale question — more held tasks to measure on, more steps, a
 larger learnable band — on a mechanism that finally points the right way.
 
+### 6.12 The learnable band is corpus-bound, not model-bound — the constraint is the tasks
+
+§6.11 measured lift on the *learnable band* — the tasks where the base model shows headroom and within-group
+reward variance (the exact condition under which GRPO has a gradient). We added a banding pre-pass: sample the
+base model G times per task at temperature 1.0, keep a task only if `max(advantage-over-empty) > 0` and the G
+rewards have spread. Of the 30 smallest-diff, all-Python mined tasks, only **7 (~23%)** are in-band for
+`Qwen3.5-9B`. On that band GRPO gives a clean +0.056 lift, solved 2→3, zero regressions — and notably rescues
+`07068ddd`, the exact task the running-mean 18-step run had regressed to −0.83.
+
+The obvious hypothesis was that a stronger base model would *widen* the band — more tasks crossing into
+learnable, lifting the aggregate. We tested it directly on `Qwen3.6-35B-A3B` (the model Mercor post-trained to
+beat Opus 4.5; MoE, 3B active, and on Tinker's live rates actually *cheaper* per token than our dense 9B —
+sample $1.335 vs $1.995 per M). Same 30 candidates, same pipeline. The band came back **7/30 — identical to the
+9B.** Not one new task became learnable. The 35B-A3B is genuinely stronger *within* the band (mean training
+reward 0.49 vs 0.30; base solves 2/3 of the held band vs the 9B's lower rate), but the band *boundary* did not
+move. Held lift was 0.0 with churn (one held solve gained, one lost) at the tiny 3-step/4-task training scale.
+
+That is the decisive reframing of this whole document. The constraint chain terminates: **not reward-shape
+(§6.5) → not compute (§6.9) → not baseline (§6.11 fixed it) → not model capability (§6.12) → the corpus.** The
+~77% of mined tasks that neither model can touch are not blocked by model weakness — a 4×-larger model unlocks
+none of them. They are dead because they are not learnable-solvable in our setup: not test-necessary in a way
+the numbered format can express, or not provisioned to a runnable RED state, or requiring edits outside the
+format's reach. This is precisely the SkyRL/Mercor headline read from the other side — *"algorithm choices
+mattered less than the data"* — and it says the lever for aggregate lift is **more learnable tasks**, not a
+bigger model, more compute, or a new reward. The tasks have to be good: their benchmark is 480 *realistic
+knowledge-work* tasks for a reason. Episodic's moat is the data pipeline (capture → mine → certify → provision),
+and that is where the next work belongs: grow the fraction of the corpus that lands in the learnable band.
+
 ## 7. Reproduce it
 
 ```bash
