@@ -84,6 +84,59 @@ def test_certify_rejects_episode_without_a_diff():
     assert result["reason"] == "no diff"
 
 
+def test_gradient_capable_accepts_a_single_file_high_headroom_task(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    result = gate.gradient_capable(episode)
+    assert result["gradient_capable"] is True
+    assert result["reason"] == "gradient-capable"
+    assert result["format_reachable"] is True
+    assert result["headroom"] > 0.05
+    assert result["gold_pass_fraction"] == 1.0
+
+
+def test_gradient_capable_rejects_when_too_many_files(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    result = gate.gradient_capable(episode, max_files=0)
+    assert result["gradient_capable"] is False
+    assert result["format_reachable"] is False
+    assert "files >" in result["format_reason"]
+    assert "not format-reachable" in result["reason"]
+
+
+def test_gradient_capable_rejects_when_diff_too_long(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    result = gate.gradient_capable(episode, max_diff_chars=1)
+    assert result["gradient_capable"] is False
+    assert result["format_reachable"] is False
+    assert "chars >" in result["format_reason"]
+
+
+def test_gradient_capable_rejects_low_headroom(corpus):
+    episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
+    result = gate.gradient_capable(episode, headroom_threshold=1.0)
+    assert result["gradient_capable"] is False
+    assert result["format_reachable"] is True
+    assert "not test-necessary" in result["reason"]
+
+
+def test_gradient_capable_rejects_episode_without_a_diff():
+    from episodic.schema import new_episode
+
+    episode = new_episode(id="ep_no_diff_grad", intent="nothing to grade")
+    episode["diffs"] = []
+    result = gate.gradient_capable(episode)
+    assert result["gradient_capable"] is False
+    assert result["reason"] == "no diff"
+
+
+def test_gradient_capable_report_aggregates_over_a_corpus(corpus):
+    report = gate.gradient_capable_report(corpus[:4])
+    assert report["total"] == 4
+    assert len(report["rows"]) == 4
+    assert report["capable"] == len(report["capable_ids"])
+    assert all(row["id"] in [ep["id"] for ep in corpus[:4]] for row in report["rows"])
+
+
 def test_agentic_runner_solves_after_test_feedback(corpus):
     episode = next(ep for ep in corpus if flywheel.bug_class(ep) == "operator")
     gold = wm._unified_diff(episode)

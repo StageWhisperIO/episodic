@@ -3,6 +3,11 @@ import pathlib
 from .. import replay
 from ..replay import modelrun
 from ..worldmodel.validate import _local_clone_episode, _oracle_diff_runner, _unified_diff
+from . import editfmt
+
+_MAX_FORMAT_FILES = 3
+_MAX_FORMAT_DIFF_CHARS = 8000
+_MIN_GRADIENT_HEADROOM = 0.05
 
 
 def score_episode(episode, runner):
@@ -138,3 +143,76 @@ def certify_corpus(episodes):
     certified = [row for row in rows if row["test_necessary"]]
     return {"total": len(rows), "certified": len(certified),
             "certified_ids": [row["id"] for row in certified], "rows": rows}
+
+
+def _format_reachable(episode, unified_diff, max_files=_MAX_FORMAT_FILES,
+                       max_diff_chars=_MAX_FORMAT_DIFF_CHARS):
+    files = editfmt._files_of(episode)
+    if not files:
+        return False, "no files"
+    if len(files) > max_files:
+        return False, f"{len(files)} files > {max_files}"
+    if any(not path.endswith(".py") for path in files):
+        return False, "touches non-.py file"
+    if len(unified_diff) > max_diff_chars:
+        return False, f"diff {len(unified_diff)} chars > {max_diff_chars}"
+    return True, "ok"
+
+
+def gradient_capable(episode, max_files=_MAX_FORMAT_FILES, max_diff_chars=_MAX_FORMAT_DIFF_CHARS,
+                      headroom_threshold=_MIN_GRADIENT_HEADROOM):
+    empty_shape = {"gold_pass_fraction": None, "empty_pass_fraction": None, "headroom": None,
+                   "format_reachable": None, "format_reason": None}
+    diff = _unified_diff(episode)
+    if not diff.strip():
+        return {"gradient_capable": False, "reason": "no diff", **empty_shape}
+
+    reachable, format_reason = _format_reachable(episode, diff, max_files, max_diff_chars)
+
+    try:
+        oracle = graded_score(episode, _oracle_diff_runner(diff))
+    except Exception as exc:
+        return {"gradient_capable": False, "reason": f"oracle run failed: {type(exc).__name__}: {exc}",
+                **{**empty_shape, "format_reachable": reachable, "format_reason": format_reason}}
+
+    if oracle["pass_fraction"] == 0:
+        return {"gradient_capable": False, "reason": "gold pass_fraction is 0 (harness can't reach green)",
+                **{**empty_shape, "format_reachable": reachable, "format_reason": format_reason,
+                   "gold_pass_fraction": 0.0}}
+
+    try:
+        empty = graded_score(episode, empty_runner)
+    except Exception as exc:
+        return {"gradient_capable": False, "reason": f"empty run failed: {type(exc).__name__}: {exc}",
+                **{**empty_shape, "format_reachable": reachable, "format_reason": format_reason,
+                   "gold_pass_fraction": oracle["pass_fraction"]}}
+
+    headroom = oracle["pass_fraction"] - empty["pass_fraction"]
+    not_discriminating = (not oracle["ok"]) or empty["ok"] or headroom <= headroom_threshold
+    capable = bool(reachable and not not_discriminating)
+
+    if not_discriminating:
+        reason = "not test-necessary (near-zero oracle advantage)"
+    elif not reachable:
+        reason = f"not format-reachable ({format_reason})"
+    else:
+        reason = "gradient-capable"
+
+    return {"gradient_capable": capable, "reason": reason, "format_reachable": reachable,
+            "format_reason": format_reason, "gold_pass_fraction": oracle["pass_fraction"],
+            "empty_pass_fraction": empty["pass_fraction"], "headroom": headroom}
+
+
+def gradient_capable_report(episodes, **kwargs):
+    rows = []
+    for episode in episodes:
+        try:
+            result = gradient_capable(episode, **kwargs)
+        except Exception as exc:
+            result = {"gradient_capable": False, "reason": f"{type(exc).__name__}: {exc}",
+                      "format_reachable": None, "format_reason": None,
+                      "gold_pass_fraction": None, "empty_pass_fraction": None, "headroom": None}
+        rows.append({"id": episode["id"], **result})
+    capable = [row for row in rows if row["gradient_capable"]]
+    return {"total": len(rows), "capable": len(capable),
+            "capable_ids": [row["id"] for row in capable], "rows": rows}
