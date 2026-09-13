@@ -358,6 +358,36 @@ def open_sampler(sampler_path, base_model=None, lora_rank=1):
     return {"service": service, "sampling": sampling, "tokenizer": tokenizer, "sampler_path": sampler_path}
 
 
+def _encode_ids(tokenizer, text):
+    if hasattr(tokenizer, "encode"):
+        return _token_ids(tokenizer.encode(text, add_special_tokens=False))
+    return _token_ids(tokenizer(text)["input_ids"])
+
+
+def build_option_logprob_fn(base_model=None, lora_rank=1):
+    _require_tinker("tinker-verifier")
+    import tinker
+    from tinker import types
+
+    service = tinker.ServiceClient()
+    training = service.create_lora_training_client(base_model=base_model or DEFAULT_MODEL, rank=lora_rank)
+    tokenizer = training.get_tokenizer()
+
+    def option_logprobs(messages, options):
+        prompt_ids = _token_ids(tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True))
+        lengths = []
+        data = []
+        for option in options:
+            option_ids = _encode_ids(tokenizer, option) or _encode_ids(tokenizer, " " + option)
+            lengths.append(len(option_ids))
+            data.append(_ce_datum(types, prompt_ids, option_ids))
+        output = training.forward(data, "cross_entropy").result()
+        return {option: sum(_completion_logprobs(output, index, lengths[index]))
+                for index, option in enumerate(options)}
+
+    return option_logprobs
+
+
 def sample_text(sampler, messages, max_tokens=200, temperature=0.0):
     from tinker import types
 
