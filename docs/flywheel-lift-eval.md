@@ -605,6 +605,132 @@ bigger model, more compute, or a new reward. The tasks have to be good: their be
 knowledge-work* tasks for a reason. Episodic's moat is the data pipeline (capture → mine → certify → provision),
 and that is where the next work belongs: grow the fraction of the corpus that lands in the learnable band.
 
+### 6.13 Two levers that move the inputs to GRPO: a warm start and a wider funnel
+
+Sections 6.11 and 6.12 left the objective sound but the inputs thin. Two follow-up experiments each improved
+one input, run as parallel agents.
+
+**SFT warm start before GRPO.** We run GRPO directly from the base model, and only 7 of 30 format-reachable
+mined tasks fall in the empirical band: the 9B can express the fix but does not attempt it. A small-scale study
+of SFT and DPO (arXiv:2603.20100) found that running the preference stage from a converged SFT checkpoint beat
+running it from the base. We tested the analog for RL on the gate. We built SFT targets from the gold numbered
+edits, trained the 9B on them for four epochs, then ran GRPO from that checkpoint through Tinker's `init_state`.
+Two arms shared the same 6 held and 12 train tasks, selected with `gate.gradient_capable`.
+
+The clearest effect is on the band, not the lift. Re-banding the 18 held-and-train tasks with the base model
+put 0 of 18 in band. Re-banding with the SFT-warm-started sampler put 5 of 18 in band. The warm start teaches
+the model to emit the `EDIT` grammar and attempt fixes, so five tasks move from a frozen zero into real
+attempt-variance. Held advantage lift was +0.028 with one additional held task solved (1 to 2), against 0.000
+lift for GRPO from base. That held number is small and noisy: one held task swung to -0.83 on the identical
+base model from test-environment flakiness in the mined corpus, so read the lift as directional and the band
+count as the reliable signal. Tinker's `init_state` warm start worked end to end (`warm_start` true, six real
+gradient updates).
+
+**A wider provisioning funnel for realistic tasks.** The SWE-rebench path from 6.12 leaked at provisioning and
+certification. Two fixes went in. First, install each instance's contemporaneous pip-freeze with `--no-deps` so
+transitive dependencies cannot drift to a newer major version, the ipyvuetify v2-to-v3 case that broke
+`sepal_ui` identically in RED and GREEN. Second, honor the repo's requested Python version through pyenv
+instead of falling back to 3.12 in silence. Both were validated with deterministic oracle runners at zero model
+cost. On the same 20 repos, provisioning rose from 65% to 80% and certification from 46% to 62.5% of
+provisioned. At 40 repos the improvement held: 82.5% provisioned, 63.6% certified. Residual failures are now
+labeled rather than silent, such as native builds that need system libraries and repos that request a Python
+version no interpreter on the machine provides.
+
+Both levers act on the inputs GRPO consumes rather than on the objective. The warm start raises the fraction of
+tasks the model will attempt. The provisioning fixes raise the fraction of realistic tasks that reach a
+gradeable RED state. Neither result rests on a large held set yet, so the next step is one run that combines
+them: an SFT-warm-started GRPO pass on the provisioning-improved SWE-rebench tasks.
+
+### 6.14 A soft verifier, tested against the trusted gate before trusting it
+
+The corpus wall from section 6.12 has one lever we had not tried: a soft LLM verifier that scores a trajectory
+without running its tests, so it can grade the roughly 77% of mined tasks the trusted gate cannot reach (not
+test-necessary or not provisionable). The idea comes from the LLM-as-a-Verifier project
+(arXiv:2607.05391): fine-grained reward as the expectation over the logprob distribution of the verifier's
+score tokens rather than a single discrete judge label, a pairwise `compare` primitive, and criteria
+decomposition. We implemented all three in `src/episodic/eval/verifier.py`, backed by forced-continuation
+logprobs from Tinker (`trainers.tinker.build_option_logprob_fn`), with the base model as verifier.
+
+The rule from the design is that the soft verifier only earns a place in the reward after it agrees with the
+trusted gate on tasks where the gate can judge. So the first run is that validation, not a training run. On 10
+mined tasks with clean ground truth (gold `pass_fraction` 1.0, empty below it), we scored the gold fix against
+a no-change candidate with both the trusted gate and a Qwen3.5-9B verifier.
+
+The base verifier is anti-correlated with ground truth. Pairwise, it preferred the real fix over no-change on 0
+of 10 tasks (mean probability 0.478). Pointwise, it rated the no-change candidate higher than the gold fix
+(0.451 versus 0.323) and could not separate a deliberately broken diff from the fix (0.340 versus 0.323). Its
+correlation with the trusted gate's `pass_fraction` was -0.72. A base model asked to rate a raw unified diff
+zero-shot is skeptical of the change and rates "no change" as the safer option, which is the opposite of the
+signal we need.
+
+The result is negative for the naive configuration and positive for the method. The validation step caught a
+reward source that would have injected anti-signal into training, before any training compute was spent, which
+is exactly what "the soft verifier trains, the trusted gate judges and validates" is for.
+
+So we ran the obvious fixes the source project implies, in one better-configured probe: an instruct verifier
+(`Qwen3-30B-A3B-Instruct-2507`), candidates presented as the reconstructed red and green file contents rather
+than a raw diff against a sentinel, and criteria phrased about the code state. The fixes helped but did not
+clear the gate. Correlation with the trusted `pass_fraction` moved from -0.72 to -0.12, so the active
+anti-signal became roughly uncorrelated noise, not agreement. Pairwise, the verifier preferred the fixed code
+on 4 of 10 tasks (mean probability 0.338), still below chance. Pointwise it still rated the unfixed version
+higher than the fix (0.238 versus 0.118) and still could not separate a broken version from the fix (broken
+0.133). Judging "is this code correct" by static inspection of small, subtle changes (import cleanups, narrow
+logic edits), without running the tests and often without the whole repo, is hard enough that a 30B instruct
+model does no better than a coin flip on it. That is the same reason the trusted execution gate is worth
+having.
+
+Read: on this corpus the cheap soft-verifier configurations do not clear the validation gate, so the verifier
+is not a shortcut around the corpus wall here. The honest path stays the same: grow the certified realistic
+corpus and run the scaled GRPO pass on it. The verifier lever is not permanently closed (a
+verifier trained on gate labels, or per-repo criteria, could still clear the gate), but it is not a cheap win.
+Pure logic lives in `verifier.py` with unit tests in `tests/test_verifier.py`; the two benchmark configs are
+`verifier_bench.py` (base, raw diff) and `verifier_bench2.py` (instruct, red-green file contents).
+
+### 6.15 The harness is the bigger lever: lessons from co-evolving harnesses and models
+
+The Salesforce paper "Co-Evolving Harnesses and Models" (arXiv:2609.09134) studies the same setup we are in: a
+weaker model, a harness around it, and lightweight fine-tuning, adapted to domain tasks on a budget. Its
+findings reframe where our effort should go.
+
+On seven enterprise agent tasks, evolving the harness (system prompt, tools, hooks, context scaffolding)
+against a fitness function moved mean success from 29.2% to 78.0%, a gain of 48.8 points. The evolved harness
+also transferred upward: a stronger expert operated the same harness and improved from 84.4% to 93.6%. Then the
+obvious next step backfired. Fine-tuning the weak model on the expert's successful trajectories under the
+evolved harness regressed every one of the seven tasks, 4 to 30 points, 14.9 on average, and the same
+regression reproduced on a second model family. The identical fine-tuning helped under the un-evolved baseline
+harness, which isolates the failure to the interaction between imitation and harness evolution. The cause was
+not lost knowledge, since both knowledge and scaffold use rose after fine-tuning. It was planning-strategy
+drift: the model adopted the expert's plan without the skill to execute it and stopped fitting the harness that
+had been evolved around its own native style. Their fix was on-policy expert correction. A meta-agent takes the
+weak model's own rollouts, localizes the single turn where each failed, and has the expert rewrite only that
+turn, then LoRA-SFT on the minimally edited trajectory. That matched or beat the evolved-harness baseline on
+every task, 78.0% to 79.7%, with gains on five of seven and no regressions, and it trains in under an hour. The
+one-line thesis: staying on-policy is what matters, because a teaching signal only helps when it respects the
+fit between the model and its harness.
+
+Three consequences for Episodic:
+
+1. We have been optimizing the smaller lever. Every RL-on-gate result here (GRPO +0.167, the warm start) is the
+   weight lever, which the paper measures at about +1.7. The harness lever is worth about +48.8, and we do not
+   evolve harnesses yet. Episodic is well placed to: the trusted gate is a ready fitness function and the mined
+   and SWE-rebench corpora are the task set. Evolving the numbered-edit instruction template against the gate
+   is plausibly a larger and cheaper win than more RL.
+
+2. The section 6.13 SFT warm start is off-policy imitation of gold solutions, which is the exact failure mode
+   the paper names. The noisy +0.028 and the single regressed held task are consistent with planning drift. The
+   fix is on-policy correction: start from the model's own attempt and change only the failing part.
+
+3. GRPO's positive lift now has an explanation. GRPO rewards the model's own samples, so it is on-policy by
+   construction and does not induce the drift that broke off-policy imitation. That is why it produced a clean
+   lift where warm-start imitation was fragile.
+
+In response we add two modules. `src/episodic/eval/harnessevo.py` evolves the numbered-edit instruction
+template against the gate, with the weak model as executor and a strong model as the reflection proposer, keeping
+an edit only when it improves the minibatch score. `src/episodic/eval/onpolicy.py` synthesizes on-policy
+correction data by taking the model's own numbered-edit attempt and minimally correcting only the failing
+region toward gold, rather than imitating the whole gold solution. Both ship with offline tests; real runs wait
+on budget.
+
 ## 7. Reproduce it
 
 ```bash
@@ -634,3 +760,4 @@ episodic eval-flywheel --backend tinker --model Qwen/Qwen3.5-4B --agentic-turns 
 `src/episodic/eval/redgreen.py` builds the tasks, `gate.py` is the trusted discriminator, `flywheel.py`
 runs the split→train→score→lift measurement (mlx or tinker). The stub backend (oracle-vs-empty) is the
 deterministic self-check; it is what CI runs and what proves the harness itself is not lying about lift.
+
