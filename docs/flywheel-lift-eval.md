@@ -731,6 +731,69 @@ correction data by taking the model's own numbered-edit attempt and minimally co
 region toward gold, rather than imitating the whole gold solution. Both ship with offline tests; real runs wait
 on budget.
 
+### 6.16 Harness evolution, first real run: pass_fraction doubles with no training
+
+Section 6.15 argued the harness is the bigger lever. We built `src/episodic/eval/harnessevo.py` and ran it for
+real. The executor is Qwen3.5-9B on Tinker, the proposer is `openai/gpt-oss-120b` served by Groq, and the
+fitness function is the trusted gate. On six mined tasks, three rounds, group of edits kept only when the
+minibatch score strictly improved:
+
+- Default harness: mean pass_fraction 0.222, solved 0 of 6.
+- Evolved harness: mean pass_fraction 0.472, solved 1 of 6.
+
+Two of three rounds accepted an improving instruction edit, and the run took about eight minutes and a few
+cents of Tinker sampling. What makes this credible rather than lucky is the content of the winning edit. The
+proposer added exactly the constraints that fix the apply-rate failures we have fought all along: "do not
+include explanations, code fences, or any text outside the blocks", "line numbers refer to the original before
+any edits", and "the replacement lines must be valid Python". Those attack the format wall directly, so the
+mechanism is legible.
+
+Then we ran the clean version and it did not hold up. Evolving on a train split of six tasks, freezing the best
+harness, and measuring on a disjoint held set of four across two seeds gave a mean held lift of -0.091, which
+is noise. On both seeds the evolve loop re-scored its Pareto pool on the train split and picked the default
+harness as best, so nothing transferred to the held set. The single-run doubling was in-sample selection plus
+variance from a stochastic executor that we scored only once per harness, not a durable gain. The honest
+reading is that harness evolution is a promising lever with a plausible mechanism (the winning edits target
+real apply-rate failures), but this setup does not yet demonstrate a held-out improvement. A fair test needs
+several samples per harness to cut the scoring variance, more tasks per split, and an accept rule that is not
+fooled by single-sample noise on tiny minibatches. Until then the harness result is unproven, not positive.
+
+### 6.17 The Matthew Effect: our dead zone is under-sampled, not unlearnable
+
+Noukhovitch's "Learning to Solve Hard Problems in RL for LLMs by Never Giving Up" (2026) names the pathology
+we have been calling the corpus wall. Standard RL improves problems the model already sometimes solves, while
+problems it starts at pass@32 of zero mostly stay at zero. Averaged eval curves hide it. The cause is GRPO
+signal loss: when none of the k sampled rollouts is correct, the group has zero reward variance, so zero
+advantage, so zero gradient, so the hard problem never moves.
+
+We documented this same effect and called it a feature. Section 6.11's free-curriculum property (a zero-variance
+group produces all-zero advantage, so a task self-excludes) is signal loss stated approvingly, and the banding
+harness keeps a task only when its advantage spread clears a threshold, which drops the hard tasks by
+construction. Part of what we concluded was a missing corpus was really the Matthew Effect that we had wired
+into the pipeline. The hard tasks were not proven unlearnable, they were dropped before they could be learned.
+
+The paper's code-RL result maps onto us exactly. With a partial per-test reward like our graded pass_fraction,
+the training signal oscillates on medium-difficulty tasks and stagnates on hard ones. Two fixes recover it, and
+both fit our stack. The first is an all-tests binary reward that scores 1.0 only when the whole suite passes, so
+a partially passing rollout counts as not solved. The second is Never Give Up: sample a small k per prompt,
+train on it if the group has spread, filter it if it is fully solved, and if every rollout fails, with
+probability p keep the prompt and sample k more next round, accumulating completions until it is finally solved,
+then train on all of them. The expected sampling for a hard prompt is k over one minus p. Because easy prompts
+are filtered cheaply, the saved compute is reallocated to the hard ones, and a small k with NGU beats a large
+fixed k.
+
+These two levers are meant to compose against the same wall. If harness evolution raises the base solve-rate it
+shrinks the pass-zero set, and NGU then grinds whatever remains at zero instead of dropping it. Section 6.16
+shows the harness half is not yet demonstrated on a held set, so the composition is a plan rather than a
+result. NGU stands on its own regardless: it attacks the signal-loss that our own banding hard-codes, whether
+or not the harness lever pans out.
+
+In response we add the reusable pieces: `sao.ngu_classify` and an NGU resampling scheduler in
+`src/episodic/trainers/sao.py`, an all-tests binary reward `gate_all_tests_reward` in
+`src/episodic/trainers/rewards.py`, and an `ngu_loop` prototype harness. All are offline-tested and additive to
+the shipped trainer. A full NGU-versus-GRPO comparison costs more sampling per hard prompt than we can fund
+right now, but the mechanism is cheap to demonstrate on a handful of hard tasks.
+
 ## 7. Reproduce it
 
 ```bash
