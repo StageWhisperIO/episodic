@@ -1,9 +1,13 @@
 import math
+import random
 
 DEFAULT_EPSILON_LOW = 0.2
 DEFAULT_EPSILON_HIGH = 0.2
 DEFAULT_BASELINE_WINDOW = 8
 DEFAULT_SAMPLER_REFRESH_STEPS = 4
+DEFAULT_NGU_K = 4
+DEFAULT_NGU_P = 0.9
+DEFAULT_NGU_MAX_ROUNDS = 6
 
 
 def unique_prompts(rows):
@@ -99,3 +103,49 @@ def terminal_rewards(reward, length):
     if length:
         rewards[-1] = reward
     return rewards
+
+
+def ngu_classify(rewards, max_reward=1.0, eps=1e-9):
+    if not rewards:
+        return "filter"
+    if all(reward >= max_reward - eps for reward in rewards):
+        return "filter"
+    if max(rewards) - min(rewards) > eps:
+        return "train"
+    return "retry"
+
+
+class NGUScheduler:
+    def __init__(self, k=DEFAULT_NGU_K, p=DEFAULT_NGU_P, max_rounds=DEFAULT_NGU_MAX_ROUNDS,
+                 rng=None, max_reward=1.0, eps=1e-9):
+        self.k = k
+        self.p = p
+        self.max_rounds = max_rounds
+        self.rng = rng if rng is not None else random.Random()
+        self.max_reward = max_reward
+        self.eps = eps
+        self._state = {}
+
+    def pending(self, key):
+        return key in self._state
+
+    def submit(self, key, samples, rewards):
+        entry = self._state.setdefault(key, {"samples": [], "rewards": [], "rounds": 0})
+        entry["samples"] = entry["samples"] + list(samples)
+        entry["rewards"] = entry["rewards"] + list(rewards)
+        entry["rounds"] += 1
+
+        action = ngu_classify(entry["rewards"], self.max_reward, self.eps)
+        if action == "train":
+            result = {"action": "train", "rounds": entry["rounds"],
+                      "samples": entry["samples"], "rewards": entry["rewards"]}
+            del self._state[key]
+            return result
+        if action == "filter":
+            del self._state[key]
+            return {"action": "filter", "rounds": entry["rounds"], "samples": None, "rewards": None}
+
+        if entry["rounds"] >= self.max_rounds or self.rng.random() >= self.p:
+            del self._state[key]
+            return {"action": "drop", "rounds": entry["rounds"], "samples": None, "rewards": None}
+        return {"action": "retry", "rounds": entry["rounds"], "samples": None, "rewards": None}

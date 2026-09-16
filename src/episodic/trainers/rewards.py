@@ -82,6 +82,27 @@ def gate_numbered_edit_reward(prompts=None, completions=None, meta=None, **kwarg
     return scores
 
 
+def gate_all_tests_reward(prompts=None, completions=None, meta=None, **kwargs):
+    from ..eval import editfmt, gate
+
+    metas = meta or []
+    scores = []
+    for index, completion in enumerate(completions or []):
+        episode = _episode_from_meta(metas[index]) if index < len(metas) else None
+        if episode is None:
+            scores.append(0.0)
+            continue
+        text = _text(completion)
+        files = editfmt._files_of(episode)
+
+        def runner(model, workspace, prompt_text, _text=text, _files=files):
+            applied, log = editfmt.apply_numbered_edits(_text, workspace, _files)
+            return log, 0 if applied else 1
+
+        scores.append(1.0 if gate.graded_score(episode, runner)["ok"] else 0.0)
+    return scores
+
+
 def graded_gate_reward(episodes):
     by_id = {episode["id"]: episode for episode in episodes}
 
